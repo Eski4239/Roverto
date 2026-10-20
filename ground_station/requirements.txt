@@ -5,3 +5,4 @@ pyserial
 cobs
 numpy
 pytest
+pytest-asyncio>=0.24,<2
