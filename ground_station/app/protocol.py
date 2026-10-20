@@ -16,6 +16,7 @@ EventLevel = Literal["info", "warn", "error"]
 EventCode = Literal[
     "BOOT", "BATT_LOW", "BATT_CRIT", "TILT", "WD_STOP",
     "ESTOP", "SENSOR_LOST", "OBSTACLE", "CMD_REJECTED",
+    "ROVER_RESTART",  # GS-synthesized only (state.py) — never on the wire
 ]
 ScanSrc = Literal["sonar", "lidar"]
 ServoMode = Literal["sweep", "fixed"]
@@ -267,7 +268,7 @@ class LinkBlock(Model):
     """Never on the radio — docs/02 §3.2. Added by state.py for the UI."""
     state: LinkState
     rx_hz: float
-    loss_pct: float
+    loss_pct: Optional[float] = None  # null/"--" in the UI until enough samples (LOSS_MIN_SAMPLES)
     rtt_ms: Optional[float] = None
     rssi_bridge_dbm: Optional[int] = None
     rssi_rover_dbm: Optional[int] = None

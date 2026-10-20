@@ -138,6 +138,10 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             for p in serial.tools.list_ports.comports()
         ]
 
+    @app.get("/config")
+    async def get_config() -> dict:
+        return {"pwm_max": config["motors"]["pwm_max"]}
+
     @app.websocket("/ws/ui")
     async def ws_ui(ws: WebSocket) -> None:
         await ws.accept()
@@ -167,7 +171,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                     estop=data.get("estop", False),
                     estop_reset=data.get("estop_reset", False),
                     buzzer=data.get("buzzer", False),
-                    request_hello=data.get("request_hello", False),
+                    request_hello=data.get("request_hello", False) or state.needs_hello_request(),
                 )
                 await link.send_cmd(cmd)
                 sent_wall_ms = time.time() * 1000.0

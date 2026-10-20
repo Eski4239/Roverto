@@ -30,6 +30,7 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ground_station.app import wire
+from ground_station.app.state import load_config as _load_gs_config
 from ground_station.app.protocol import (
     CmdMsg,
     EventMsg,
@@ -65,7 +66,21 @@ LIDAR_SCAN_PERIOD_S = 0.1
 BRIDGE_STATUS_PERIOD_S = 1.0
 TELEM_PERIOD_S = 0.1
 BATT_CRIT_V = 9.9
+BATT_LOW_V = 10.5
+BATT_HYSTERESIS_V = 0.2
+BATT_PERSIST_S = 3.0
 TILT_LIMIT_DEG = 35.0
+TILT_RESUME_DEG = 30.0
+OBSTACLE_DIST_CM = 20.0
+RATE_LIMITED_EVENT_PERIOD_S = 1.0
+
+
+def _default_pwm_max() -> int:
+    try:
+        cfg = _load_gs_config(Path(__file__).resolve().parent.parent / "ground_station" / "app" / "config.toml")
+        return int(cfg.get("motors", {}).get("pwm_max", 120))
+    except (OSError, KeyError, ValueError):
+        return 120
 
 # Fake rectangular room, sonar frame: 0 deg = front, CCW+. angle_deg -> wall dist_cm.
 FAKE_ROOM_CM = {0: 180, 30: 160, 60: 120, 90: 90, 120: 120, 150: 160, 180: 180}
@@ -105,11 +120,26 @@ class RoverState:
     last_cmd_mono: Optional[float] = None
     last_accepted_mode: Optional[str] = None
     last_accepted_flags: Optional[int] = None
+    last_accepted_drive_zero: bool = True
 
     hello_requested: bool = True  # send HELLO immediately on boot
     wd_stop_sent: bool = False
     pending_events: list[EventMsg] = field(default_factory=list)
     pending_acks: list[wire.AckMsg] = field(default_factory=list)
+
+    # GS-1: edge-triggered events, emitted once per state change, not per tick.
+    tilt_active: bool = False
+    batt_low_active: bool = False
+    batt_crit_active: bool = False
+    batt_low_since: Optional[float] = None
+    batt_crit_since: Optional[float] = None
+    last_cmd_rejected_event_mono: Optional[float] = None
+    last_obstacle_event_mono: Optional[float] = None
+    obstacle_blocking: bool = False
+
+    pwm_max: int = 120
+    reboot_after_s: Optional[float] = None
+    rebooted: bool = False
 
     def now_ms(self) -> int:
         return int((time.monotonic() - self.start_mono) * 1000)
@@ -129,8 +159,44 @@ class RoverState:
             return "dht11"
         return None
 
+    def _maybe_reboot(self, elapsed: float) -> None:
+        """--reboot-after N: simulate a one-shot rover reboot at uptime N s
+        (GS-2 testing aid) -- seq/t_ms restart from 0, a fresh HELLO is sent,
+        watchdog/estop/tilt/battery latches clear as a real power-cycle would."""
+        if self.reboot_after_s is None or self.rebooted or elapsed < self.reboot_after_s:
+            return
+        self.rebooted = True
+        self.start_mono = time.monotonic()
+        self.seq = 0
+        self.hello_requested = True
+        self.estop_latched = False
+        self.wd_ok = True
+        self.wd_stop_sent = False
+        self.last_cmd_mono = None
+        self.last_accepted_mode = None
+        self.last_accepted_flags = None
+        self.last_accepted_drive_zero = True
+        self.tilt_active = False
+        self.batt_low_active = False
+        self.batt_crit_active = False
+        self.batt_low_since = None
+        self.batt_crit_since = None
+        self.roll_deg = 0.0
+        self.pitch_deg = 0.0
+        self.drive_l = 0.0
+        self.drive_r = 0.0
+        # A real power-cycle can't have anything queued with a pre-reboot
+        # seq: drop pending acks/events built before the reboot, and any
+        # scan sweep in progress (its fragments share the old scan's seq).
+        self.pending_events.clear()
+        self.pending_acks.clear()
+        self.scan_id = 0
+
     def tick(self) -> None:
         """Advance drift/decay and enforce safety rules. Call at ~10 Hz."""
+        now = time.monotonic()
+        elapsed = now - self.start_mono
+        self._maybe_reboot(elapsed)
         now = time.monotonic()
         elapsed = now - self.start_mono
         # battery: 12.6 -> 9.8 V over a ~10 minute demo run, then holds
@@ -164,19 +230,52 @@ class RoverState:
             self.drive_l = 0.0
             self.drive_r = 0.0
 
-        # tilt: docs/02 §5.3
-        if abs(self.roll_deg) > TILT_LIMIT_DEG or abs(self.pitch_deg) > TILT_LIMIT_DEG:
+        # tilt: docs/02 §5.3, Q-3 -- latch until both axes are back under the
+        # resume threshold AND a zero-drive cmd has been accepted (GS-1: emit
+        # only once per transition, not every tick while tilted).
+        is_tilted = abs(self.roll_deg) > TILT_LIMIT_DEG or abs(self.pitch_deg) > TILT_LIMIT_DEG
+        if is_tilted:
             self.drive_l = 0.0
             self.drive_r = 0.0
-            self._emit_event("warn", "TILT", f"roll={self.roll_deg:.1f} pitch={self.pitch_deg:.1f}")
+            if not self.tilt_active:
+                self.tilt_active = True
+                self._emit_event("warn", "TILT", f"roll={self.roll_deg:.1f} pitch={self.pitch_deg:.1f}")
+        elif self.tilt_active:
+            self.drive_l = 0.0
+            self.drive_r = 0.0
+            resumed = (
+                abs(self.roll_deg) < TILT_RESUME_DEG
+                and abs(self.pitch_deg) < TILT_RESUME_DEG
+                and self.last_accepted_drive_zero
+            )
+            if resumed:
+                self.tilt_active = False
 
-        # battery critical: docs/02 §5.4
+        # battery: docs/02 §5.4, Q-4 -- 3 s persistence before the event/limit
+        # fires, 0.2 V hysteresis before it clears; emit once per transition.
         if self.vbat_v < BATT_CRIT_V:
+            if self.batt_crit_since is None:
+                self.batt_crit_since = now
+            if not self.batt_crit_active and now - self.batt_crit_since >= BATT_PERSIST_S:
+                self.batt_crit_active = True
+                self._emit_event("error", "BATT_CRIT", f"vbat {self.vbat_v:.1f} V")
+        elif self.vbat_v >= BATT_CRIT_V + BATT_HYSTERESIS_V:
+            self.batt_crit_since = None
+            self.batt_crit_active = False
+
+        if self.batt_crit_active:
             self.drive_l = max(-0.3, min(0.3, self.drive_l))
             self.drive_r = max(-0.3, min(0.3, self.drive_r))
-            self._emit_event("error", "BATT_CRIT", f"vbat {self.vbat_v:.1f} V")
-        elif self.vbat_v < 10.5:
-            self._emit_event("warn", "BATT_LOW", f"vbat {self.vbat_v:.1f} V")
+
+        if self.vbat_v < BATT_LOW_V:
+            if self.batt_low_since is None:
+                self.batt_low_since = now
+            if not self.batt_low_active and now - self.batt_low_since >= BATT_PERSIST_S:
+                self.batt_low_active = True
+                self._emit_event("warn", "BATT_LOW", f"vbat {self.vbat_v:.1f} V")
+        elif self.vbat_v >= BATT_LOW_V + BATT_HYSTERESIS_V:
+            self.batt_low_since = None
+            self.batt_low_active = False
 
         # sonar servo sweep (ignored while in fixed mode)
         if self.servo_mode == "sweep":
@@ -200,7 +299,7 @@ class RoverState:
     # -------------------------------------------------------------- cmd ----
 
     def apply_cmd(self, cmd: CmdMsg) -> Optional[wire.AckMsg]:
-        """docs/02 §6.8 ack rules; §5.2 estop latch."""
+        """docs/02 §6.8 ack rules; §5.2 estop latch; §5 4b modes (Q-5)."""
         self.last_cmd_mono = time.monotonic()
 
         cmd_flags = (
@@ -215,16 +314,52 @@ class RoverState:
         if cmd.estop_reset:
             self.estop_latched = False
 
+        if cmd.request_hello:
+            self.hello_requested = True
+
+        # Q-5: auto is rejected outright until navigation exists -- the mode,
+        # drive and servo changes in this cmd are all ignored.
+        if cmd.mode == "auto":
+            self.last_cmd_mono = time.monotonic()  # watchdog still sees a live link
+            now = time.monotonic()
+            if (
+                self.last_cmd_rejected_event_mono is None
+                or now - self.last_cmd_rejected_event_mono >= RATE_LIMITED_EVENT_PERIOD_S
+            ):
+                self.last_cmd_rejected_event_mono = now
+                self._emit_event("warn", "CMD_REJECTED", "auto mode not implemented")
+            ack = wire.AckMsg(t=self.now_ms(), seq=self.next_seq(), ack_seq=cmd.seq, ok=False)
+            self.pending_acks.append(ack)
+            return ack
+
+        drive_l = max(-1.0, min(1.0, cmd.drive.l))
+        drive_r = max(-1.0, min(1.0, cmd.drive.r))
+
+        if cmd.mode == "assisted":
+            front_dist = self._sonar_dist_cm(0.0)
+            blocking = front_dist < OBSTACLE_DIST_CM and drive_l > 0 and drive_r > 0
+            if blocking:
+                drive_l = min(0.0, drive_l)
+                drive_r = min(0.0, drive_r)
+                now = time.monotonic()
+                if (
+                    self.last_obstacle_event_mono is None
+                    or now - self.last_obstacle_event_mono >= RATE_LIMITED_EVENT_PERIOD_S
+                ):
+                    self.last_obstacle_event_mono = now
+                    self._emit_event("warn", "OBSTACLE", f"front {front_dist:.0f} cm, forward blocked")
+                self.obstacle_blocking = True
+            else:
+                self.obstacle_blocking = False
+
         if not self.estop_latched:
-            self.drive_l = max(-1.0, min(1.0, cmd.drive.l))
-            self.drive_r = max(-1.0, min(1.0, cmd.drive.r))
+            self.drive_l = drive_l
+            self.drive_r = drive_r
 
         self.mode = cmd.mode
         self.servo_mode = cmd.servo.mode
         self.servo_angle_deg = cmd.servo.angle_deg
-
-        if cmd.request_hello:
-            self.hello_requested = True
+        self.last_accepted_drive_zero = drive_l == 0.0 and drive_r == 0.0
 
         ack_rule_a = (
             self.last_accepted_mode is not None
@@ -280,8 +415,8 @@ class RoverState:
         has_hum = env_model == "bme280"
         has_press = env_model in ("bme280", "bmp280")
         sonar_dist = self._sonar_dist_cm(self.sweep_angle_deg)
-        pwm_l = int(self.drive_l * 255)
-        pwm_r = int(self.drive_r * 255)
+        pwm_l = int(self.drive_l * self.pwm_max)
+        pwm_r = int(self.drive_r * self.pwm_max)
         return TelemMsg(
             t=self.now_ms(), seq=self.next_seq(),
             env=TelemEnv(
@@ -499,6 +634,8 @@ def build_state(args: argparse.Namespace) -> RoverState:
         encoders=args.encoders,
         ina219=args.ina219,
         lidar=args.lidar,
+        pwm_max=args.pwm_max,
+        reboot_after_s=args.reboot_after,
     )
     return state
 
@@ -517,6 +654,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--rssi", type=int, default=-70)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--pwm-max", type=int, default=_default_pwm_max(), dest="pwm_max")
+    parser.add_argument(
+        "--reboot-after", type=float, default=None,
+        help="simulate one rover reboot at this uptime in seconds (GS-2 testing)",
+    )
     return parser.parse_args(argv)
 
 

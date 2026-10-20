@@ -9,7 +9,6 @@ const THRESHOLDS = {
 export class TopBar {
   constructor(root) {
     this.root = root;
-    this.missionStartWallMs = null;
     this.lastVbatWallMs = null;
     this.lastVbatValue = null;
   }
@@ -26,10 +25,11 @@ export class TopBar {
     this._text("tb-rtt", link.rtt_ms != null ? `${Math.round(link.rtt_ms)} ms` : "—");
     this._lossText("tb-loss", link.loss_pct);
 
-    if (telem && this.missionStartWallMs === null) {
-      this.missionStartWallMs = nowWallMs;
-    }
-    this._text("tb-clock", this._missionClock(nowWallMs));
+    // Mission clock is backend-owned (GroundState.mission_start_wall_ms, set
+    // once at the first TELEM after the backend started) so a page refresh
+    // or a rover reboot doesn't reset it -- only restarting the ground
+    // station process does.
+    this._text("tb-clock", this._missionClock(snapshot.mission_start_wall_ms, nowWallMs));
 
     this._renderBattery(telem, linkLost, nowWallMs);
 
@@ -96,9 +96,9 @@ export class TopBar {
     return field.text;
   }
 
-  _missionClock(nowWallMs) {
-    if (this.missionStartWallMs === null) return "T+00:00:00";
-    const elapsedS = Math.max(0, Math.round((nowWallMs - this.missionStartWallMs) / 1000));
+  _missionClock(missionStartWallMs, nowWallMs) {
+    if (missionStartWallMs == null) return "T+00:00:00";
+    const elapsedS = Math.max(0, Math.round((nowWallMs - missionStartWallMs) / 1000));
     const hh = String(Math.floor(elapsedS / 3600)).padStart(2, "0");
     const mm = String(Math.floor((elapsedS % 3600) / 60)).padStart(2, "0");
     const ss = String(elapsedS % 60).padStart(2, "0");
@@ -113,7 +113,8 @@ export class TopBar {
   _lossText(id, lossPct) {
     const el = document.getElementById(id);
     if (!el) return;
-    el.textContent = `${lossPct != null ? lossPct.toFixed(1) : "0.0"} %`;
-    el.className = thresholdClass(lossPct, THRESHOLDS.loss_pct);
+    // null = not enough samples yet (e.g. just after a restart), not 0%.
+    el.textContent = lossPct != null ? `${lossPct.toFixed(1)} %` : "—";
+    el.className = lossPct != null ? thresholdClass(lossPct, THRESHOLDS.loss_pct) : "";
   }
 }

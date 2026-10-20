@@ -2,9 +2,11 @@ import { UiSocket } from "./ws.js";
 import { TopBar } from "./topbar.js";
 import { PowerWidget } from "./powerwidget.js";
 import { PortPicker } from "./portpicker.js";
+import { EventLogWidget } from "./eventlog.js";
 
 const topBar = new TopBar(document.getElementById("topbar"));
 const powerWidget = new PowerWidget(document.getElementById("power-widget"));
+const eventLog = new EventLogWidget(document.getElementById("event-log"));
 const portPicker = new PortPicker(
   document.getElementById("port-select"),
   document.getElementById("port-connect"),
@@ -16,6 +18,7 @@ const socket = new UiSocket({
     const nowWallMs = Date.now();
     topBar.render(snapshot, nowWallMs);
     powerWidget.render(snapshot);
+    eventLog.render(snapshot);
     renderEstop(snapshot);
     if (snapshot.link && snapshot.link.state === "NO_BRIDGE") {
       portPicker.ensureLoaded();

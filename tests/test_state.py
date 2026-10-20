@@ -1,8 +1,13 @@
 """state.py unit tests — LinkTracker loss/rx_hz/rtt and GroundState.snapshot."""
 from __future__ import annotations
 
+from typing import Optional
+
 from ground_station.app import wire
-from ground_station.app.protocol import AckMsg, TelemEnv, TelemImu, TelemLight, TelemMot
+from ground_station.app.protocol import (
+    AckMsg, HelloMsg, Hw, HwBattery, HwBuzzer, HwCurrent, HwEncoders, HwEnv,
+    HwImu, HwLidar, HwLight, HwSonar, TelemEnv, TelemImu, TelemLight, TelemMot,
+)
 from ground_station.app.protocol import TelemMsg, TelemOdom, TelemPwr, TelemSonar, TelemState, TelemSys
 from ground_station.app.state import GroundState, LinkTracker
 
@@ -18,23 +23,36 @@ def _telem(seq: int, t: int = 0) -> TelemMsg:
     )
 
 
+def _feed_seqs(tracker: LinkTracker, seqs: list[int], *, step_ms: float = 100.0, start_ms: float = 1000.0) -> Optional[float]:
+    """Feed seqs spaced step_ms apart (default 100ms, well past the 200ms
+    in-flight window by the time we snapshot) and return loss_pct at the end."""
+    t = start_ms
+    for seq in seqs:
+        tracker.on_rover_seq(seq, recv_wall_ms=t)
+        t += step_ms
+    block = tracker.to_block(now_wall_ms=t + 300.0, connected=True, serial_port="COM5")
+    return block.loss_pct
+
+
+def test_loss_pct_below_min_samples_is_none():
+    """Fewer than LOSS_MIN_SAMPLES in the window -> unknown, not 0% -- one
+    in-flight message can look like several percent of a tiny window."""
+    tracker = LinkTracker()
+    loss = _feed_seqs(tracker, list(range(5)))
+    assert loss is None
+
+
 def test_loss_pct_no_gaps():
     tracker = LinkTracker()
-    for seq in range(5):
-        tracker.on_rover_seq(seq)
-        tracker.on_telem(_telem(seq), recv_wall_ms=1000.0 + seq, rssi=-50)
-    block = tracker.to_block(now_wall_ms=1010.0, connected=True, serial_port="COM5")
-    assert block.loss_pct == 0.0
+    loss = _feed_seqs(tracker, list(range(25)))
+    assert loss == 0.0
 
 
 def test_loss_pct_with_gap():
     tracker = LinkTracker()
-    tracker.on_rover_seq(0, recv_wall_ms=1000.0)
-    tracker.on_telem(_telem(0), recv_wall_ms=1000.0, rssi=-50)
-    tracker.on_rover_seq(5, recv_wall_ms=1001.0)  # 4 missing
-    tracker.on_telem(_telem(5), recv_wall_ms=1001.0, rssi=-50)
-    block = tracker.to_block(now_wall_ms=1002.0, connected=True, serial_port="COM5")
-    assert block.loss_pct > 0.0
+    seqs = list(range(25)) + [29]  # seqs 25-28 missing, well past in-flight
+    loss = _feed_seqs(tracker, seqs)
+    assert loss > 0.0
 
 
 def test_loss_pct_tolerates_reordering():
@@ -42,34 +60,63 @@ def test_loss_pct_tolerates_reordering():
     types; messages built on different code paths (e.g. an ack vs. the
     next telem) can arrive slightly out of seq order with zero real loss."""
     tracker = LinkTracker()
-    for seq in [10, 12, 11, 14, 13, 16, 15]:
-        tracker.on_rover_seq(seq, recv_wall_ms=1000.0)
-    block = tracker.to_block(now_wall_ms=1000.0, connected=True, serial_port="COM5")
-    assert block.loss_pct == 0.0
+    seqs = list(range(10, 20)) + [21, 20, 22, 24, 23, 26, 25, 28, 27, 29]
+    loss = _feed_seqs(tracker, seqs)
+    assert loss == 0.0
 
 
 def test_loss_pct_resets_on_rover_restart():
     """Bug repro: rover reboots, seq restarts from 0. A backwards jump this
     large must be recognised as a restart (not ~60k lost frames) and the
-    loss window must recover to ~0 well within LOSS_WINDOW_MS."""
+    loss window must recover to ~0 well within LOSS_WINDOW_MS, once there
+    are enough post-restart samples to report a number at all."""
     tracker = LinkTracker()
     tracker.on_rover_seq(30000, recv_wall_ms=1000.0)
     tracker.on_rover_seq(0, recv_wall_ms=1001.0)  # rover restart
-    for i, seq in enumerate(range(1, 10)):
-        tracker.on_rover_seq(seq, recv_wall_ms=1002.0 + i)
-    block = tracker.to_block(now_wall_ms=1011.0, connected=True, serial_port="COM5")
+    t = 1002.0
+    for seq in range(1, 25):
+        tracker.on_rover_seq(seq, recv_wall_ms=t)
+        t += 100.0
+    block = tracker.to_block(now_wall_ms=t + 300.0, connected=True, serial_port="COM5")
+    assert block.loss_pct is not None
     assert block.loss_pct < 5.0
 
 
 def test_seq_wrap_65535_to_0_counts_as_no_loss():
     tracker = LinkTracker()
-    tracker.on_rover_seq(65533, recv_wall_ms=1000.0)
-    tracker.on_rover_seq(65534, recv_wall_ms=1001.0)
-    tracker.on_rover_seq(65535, recv_wall_ms=1002.0)
-    tracker.on_rover_seq(0, recv_wall_ms=1003.0)
-    tracker.on_rover_seq(1, recv_wall_ms=1004.0)
-    block = tracker.to_block(now_wall_ms=1005.0, connected=True, serial_port="COM5")
-    assert block.loss_pct == 0.0
+    seqs = list(range(65515, 65536)) + list(range(0, 10))
+    loss = _feed_seqs(tracker, seqs)
+    assert loss == 0.0
+
+
+def test_loss_pct_one_message_slightly_out_of_order_is_zero():
+    """Bug repro (D-003): an EVENT/ACK built on a different code path can
+    arrive one seq behind the latest TELEM with zero real loss. Unwrapping
+    against the first-arrived seq instead of the latest put an
+    out-of-order seq at a huge negative offset -- a bogus ~65536-wide span."""
+    tracker = LinkTracker()
+    contiguous = list(range(1, 26))  # 1..25, no gaps
+    # Swap 18 and 20's arrival order so 18 lands one message *after* 20.
+    seqs = [s for s in contiguous if s not in (18, 20)]
+    i = seqs.index(19)
+    seqs = seqs[:i] + [20, 18, 19] + seqs[i + 1:]
+    assert sorted(seqs) == contiguous  # same set, just reordered
+    loss = _feed_seqs(tracker, seqs)
+    assert loss == 0.0
+
+
+def test_loss_pct_with_one_real_gap_among_reordering():
+    tracker = LinkTracker()
+    seqs = list(range(1, 21)) + [21, 22, 23, 25, 26, 27, 29, 30]
+    loss = _feed_seqs(tracker, seqs)
+    assert 0.0 < loss < 20.0
+
+
+def test_loss_pct_wrap_with_reordering_is_zero():
+    tracker = LinkTracker()
+    seqs = list(range(65510, 65534)) + [65535, 65534, 0, 1, 2, 3]
+    loss = _feed_seqs(tracker, seqs)
+    assert loss == 0.0
 
 
 def test_loss_pct_windowed_to_10s():
@@ -78,9 +125,26 @@ def test_loss_pct_windowed_to_10s():
     tracker = LinkTracker()
     tracker.on_rover_seq(0, recv_wall_ms=0.0)
     tracker.on_rover_seq(100, recv_wall_ms=1.0)  # big gap, long ago
-    for i, seq in enumerate(range(200, 210)):
-        tracker.on_rover_seq(seq, recv_wall_ms=20_000.0 + i)
-    block = tracker.to_block(now_wall_ms=20_010.0, connected=True, serial_port="COM5")
+    t = 20_000.0
+    for seq in range(200, 225):
+        tracker.on_rover_seq(seq, recv_wall_ms=t)
+        t += 100.0
+    block = tracker.to_block(now_wall_ms=t + 300.0, connected=True, serial_port="COM5")
+    assert block.loss_pct == 0.0
+
+
+def test_loss_pct_ignores_in_flight_sample():
+    """A seq received in the last LOSS_IN_FLIGHT_MS (200ms) may just not
+    have had time to be joined by a sibling message yet (e.g. its ack) --
+    it must not be counted as a gap purely for being the newest arrival."""
+    tracker = LinkTracker()
+    t = 1000.0
+    for seq in range(25):
+        tracker.on_rover_seq(seq, recv_wall_ms=t)
+        t += 100.0
+    # Snapshot immediately after the last seq (within the in-flight window)
+    # rather than waiting -- the newest arrival alone must not read as loss.
+    block = tracker.to_block(now_wall_ms=t, connected=True, serial_port="COM5")
     assert block.loss_pct == 0.0
 
 
@@ -121,3 +185,141 @@ def test_ground_state_ingest_telem_updates_snapshot():
     assert snap["telem"]["seq"] == 1
     assert snap["link"]["state"] == "OK"
     assert snap["link"]["rssi_rover_dbm"] == -60
+
+
+def test_restart_detected_from_backward_t_ms_at_30s_uptime():
+    """GS-2: a reboot early in uptime (here: 30 s in) must be caught even
+    though the seq delta is far too small to trip RESTART_BACKWARD_JUMP."""
+    state = GroundState()
+    state.ingest(_telem(300, t=30_000), rssi=-55, recv_wall_ms=1000.0)
+    state.ingest(_telem(301, t=500), rssi=-55, recv_wall_ms=1001.0)
+    codes = [e.code for e in state.events]
+    assert "ROVER_RESTART" in codes
+
+
+def test_t_ms_wrap_at_2_32_is_not_a_restart():
+    state = GroundState()
+    state.ingest(_telem(1, t=2**32 - 1000), rssi=-55, recv_wall_ms=1000.0)
+    state.ingest(_telem(2, t=500), rssi=-55, recv_wall_ms=1001.0)
+    codes = [e.code for e in state.events]
+    assert "ROVER_RESTART" not in codes
+
+
+def test_link_reconnect_is_not_a_restart():
+    """Restart detection is driven only by t_ms/seq/HELLO, never by the
+    connected/link-state flag -- a USB bridge replug must not be flagged."""
+    state = GroundState()
+    state.ingest(_telem(1, t=500), rssi=-55, recv_wall_ms=1000.0)
+    state.snapshot(now_wall_ms=1010.0, connected=False, serial_port=None)
+    state.snapshot(now_wall_ms=1020.0, connected=True, serial_port="COM5")
+    state.ingest(_telem(2, t=600), rssi=-55, recv_wall_ms=1030.0)
+    codes = [e.code for e in state.events]
+    assert "ROVER_RESTART" not in codes
+
+
+def test_no_prior_restart_link_gap_traffic_is_accepted():
+    """Baseline (no restart ever detected): a 5s silent link gap followed
+    by traffic 5000ms ahead must be accepted outright. The straggler rule
+    is gated on a restart having been detected at all
+    (_restart_detected_wall_ms is None here) -- it must never trigger from
+    ordinary link silence alone, with or without a prior restart."""
+    state = GroundState()
+    state.ingest(_telem(1, t=1000), rssi=-55, recv_wall_ms=1000.0)
+    state.ingest(_telem(2, t=1100), rssi=-55, recv_wall_ms=1100.0)
+    # link silent for 5s; rover keeps running, so t_ms/seq jump far ahead
+    # on resume purely from elapsed time, not a reboot.
+    state.ingest(_telem(52, t=6100), rssi=-55, recv_wall_ms=6100.0)
+
+    codes = [e.code for e in state.events]
+    assert "ROVER_RESTART" not in codes
+    assert state.straggler_count == 0
+    assert state.telem is not None and state.telem.seq == 52
+    block = state.link.to_block(now_wall_ms=6200.0, connected=True, serial_port="COM5")
+    assert block.state == "OK"
+
+
+def test_straggler_rule_expires_after_link_gap_not_a_restart():
+    """GS-2 edge case: the straggler rule exists to drop pre-reboot messages
+    delivered late right after a *detected restart*, not to reject normal
+    catch-up traffic after any ordinary link gap (silence, not a reboot).
+    Scenario: a restart is detected, then the link goes silent for 5s (out
+    of ESP-NOW range, say) while the rover keeps running -- it is NOT the
+    rover rebooting again. When traffic resumes with t_ms/seq far ahead of
+    what the GS last saw, that message must be ACCEPTED (no second
+    ROVER_RESTART, no straggler drop) because 5s is well past
+    STRAGGLER_WINDOW_MS (2s): the straggler rule must have already expired.
+    """
+    state = GroundState()
+    # Establish a restart so the straggler reference point exists at all.
+    state.ingest(_telem(300, t=30_000), rssi=-55, recv_wall_ms=1000.0)
+    state.ingest(_telem(301, t=500), rssi=-55, recv_wall_ms=1001.0)  # triggers restart
+    restart_events_before = sum(1 for e in state.events if e.code == "ROVER_RESTART")
+    assert restart_events_before == 1
+
+    # Link silent for 5s (no ingest calls at all); rover's own clock/seq
+    # keep advancing meanwhile. On resume, t_ms is >1000ms and seq is >50
+    # ahead of what the GS saw right after the restart -- the straggler
+    # condition's t_ms/seq checks alone would match, but 5s have passed.
+    state.ingest(_telem(361, t=5600), rssi=-55, recv_wall_ms=6001.0)
+
+    codes_after = [e for e in state.events if e.code == "ROVER_RESTART"]
+    assert len(codes_after) == 1  # no second (spurious) restart detected
+    assert state.straggler_count == 0
+    assert state.telem is not None and state.telem.seq == 361
+    block = state.link.to_block(now_wall_ms=6101.0, connected=True, serial_port="COM5")
+    assert block.state == "OK"
+
+
+def test_straggler_rule_would_reject_link_gap_traffic_if_permanent():
+    """Proves the previous test actually exercises the time-box: with
+    STRAGGLER_WINDOW_MS's expiry check removed (see the TEMP line this test
+    asserts against directly), the exact same resumed-after-gap message
+    would be wrongly dropped as a straggler -- straggler_count would go to
+    1 instead of staying 0, exactly the false rejection the task warned
+    about. This test calls the real _check_restart with the real module
+    constants so it fails if someone widens/removes the window again."""
+    state = GroundState()
+    state.ingest(_telem(300, t=30_000), rssi=-55, recv_wall_ms=1000.0)
+    state.ingest(_telem(301, t=500), rssi=-55, recv_wall_ms=1001.0)  # triggers restart
+
+    newest_t_ms = state._newest_post_restart_t_ms
+    newest_seq = state._newest_post_restart_seq
+    resume_t_ms = 5600
+    resume_seq = 361
+    resume_wall_ms = 6001.0
+
+    # Sanity: this scenario really does satisfy the t_ms/seq thresholds in
+    # isolation -- otherwise a permanent rule wouldn't reject it either, and
+    # this test would prove nothing.
+    from ground_station.app.state import STRAGGLER_SEQ_AHEAD, STRAGGLER_T_MS_AHEAD, STRAGGLER_WINDOW_MS
+    assert resume_t_ms > newest_t_ms + STRAGGLER_T_MS_AHEAD
+    assert ((resume_seq - newest_seq) % 65536) > STRAGGLER_SEQ_AHEAD
+    # And the wall-clock gap is indeed past the time-box, which is exactly
+    # why the real (time-boxed) implementation accepts it:
+    assert resume_wall_ms - state._restart_detected_wall_ms > STRAGGLER_WINDOW_MS
+
+    accepted = state._check_restart(
+        resume_t_ms, resume_seq, resume_wall_ms, is_hello=False, hello_seq=None,
+    )
+    assert accepted is True
+    assert state.straggler_count == 0
+
+
+def test_hello_seq_zero_first_message_ever_is_not_a_restart():
+    """The very first message of a session can't be a restart -- there is
+    no prior t_ms to have gone backward from."""
+    state = GroundState()
+    hello = HelloMsg(
+        t=0, seq=0, fw="rover_main 0.1.0", reset_reason="POWERON",
+        hw=Hw(
+            imu=HwImu(present=True), env=HwEnv(present=True, model="bme280"),
+            light=HwLight(present=True), sonar=HwSonar(present=True),
+            battery=HwBattery(present=True, cells=3), current=HwCurrent(present=False),
+            encoders=HwEncoders(present=False), lidar=HwLidar(present=False),
+            buzzer=HwBuzzer(present=True),
+        ),
+    )
+    state.ingest(hello, rssi=-55, recv_wall_ms=1000.0)
+    codes = [e.code for e in state.events]
+    assert "ROVER_RESTART" not in codes
+    assert state.needs_hello_request() is False

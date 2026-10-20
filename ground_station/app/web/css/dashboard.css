@@ -212,6 +212,23 @@ html, body {
   text-align: center;
 }
 
+/* minimal event log (wired early for GS-2 visibility; full panel is Phase 7) */
+.event-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  font-family: monospace;
+}
+.ev-row { display: flex; gap: 0.5rem; white-space: nowrap; }
+.ev-t { color: var(--text-dim); flex-shrink: 0; }
+.ev-code { flex-shrink: 0; font-weight: bold; }
+.ev-msg { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
+.ev-row.ev-warn .ev-code { color: var(--amber); }
+.ev-row.ev-error .ev-code { color: var(--red); }
+.ev-row.ev-info .ev-code { color: var(--text); }
+
 /* power widget (phase-4 live sub-panel inside Rover Health) */
 .power-widget { display: flex; flex-direction: column; gap: 0.15rem; }
 .power-widget .row { display: flex; justify-content: space-between; gap: 0.5rem; }

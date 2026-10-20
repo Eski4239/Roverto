@@ -7,9 +7,11 @@ bound to OS-assigned ports, matching tests/test_simulator.py conventions.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from ground_station.app import wire
 from ground_station.app.link import Link
+from ground_station.app.state import GroundState, LinkTracker
 from simulator.fake_rover import parse_args, run_server
 
 TIMEOUT = 2.0
@@ -78,6 +80,116 @@ async def test_link_reconnects_after_simulator_restart():
     await link.stop()
     server2.close()
     await server2.wait_closed()
+
+
+async def test_loss_pct_stays_low_against_real_simulator_traffic():
+    """End-to-end regression for the loss_pct unwrap bug: a real simulator
+    (no --lossy) feeding a real LinkTracker through decoded wire frames for
+    5 s must not report significant loss -- it mixes TELEM/HELLO/EVENT/ACK/
+    scan-fragment seqs from the same counter, which is exactly the kind of
+    slight reordering between message types (D-003) that triggered it."""
+    server, port = await _start_simulator()
+    link = Link(f"socket://127.0.0.1:{port}", reconnect_retry_s=RECONNECT_RETRY_S)
+    tracker = LinkTracker()
+    try:
+        await link.start()
+        deadline = asyncio.get_event_loop().time() + 5.0
+        frames = link.frames()
+        while asyncio.get_event_loop().time() < deadline:
+            frame = await asyncio.wait_for(frames.__anext__(), timeout=TIMEOUT)
+            if frame.kind != wire.SK_RX_FROM_ROVER:
+                continue
+            try:
+                decoded = wire.decode_message(frame.payload)
+            except wire.WireError:
+                continue
+            if isinstance(decoded, tuple):
+                scan, _part, _parts = decoded
+                tracker.on_rover_seq(scan.seq)
+            else:
+                tracker.on_rover_seq(decoded.seq)
+        block = tracker.to_block(
+            now_wall_ms=time.time() * 1000.0, connected=True, serial_port="COM5",
+        )
+        assert block.loss_pct < 2.0
+    finally:
+        await link.stop()
+        server.close()
+        await server.wait_closed()
+
+
+async def test_reboot_after_recovers_loss_pct_and_mission_clock():
+    """End-to-end regression: a real simulator reboot (--reboot-after 5)
+    must not leave a pre-reboot straggler poisoning _highest_rover_seq
+    (the bug: a late seq-114 message after post-reboot seqs 2,3,4 looked
+    110 ahead, driving loss_pct to ~96% and STALE for ~6s). With the fixed
+    loss metric (unknown/null until LOSS_MIN_SAMPLES, in-flight messages
+    excluded from the missing tally), loss_pct must read < 2% (or be null,
+    i.e. not enough samples yet -- never a number above 2%) at every
+    snapshot from 1s after the restart; exactly one ROVER_RESTART event
+    must be logged; and the backend-owned mission clock must stay
+    monotonic (not reset) across the reboot."""
+    args = parse_args(["--reboot-after", "5"])
+    args.host = "127.0.0.1"
+    args.port = 0
+    server = await run_server(args)
+    port = server.sockets[0].getsockname()[1]
+
+    link = Link(f"socket://127.0.0.1:{port}", reconnect_retry_s=RECONNECT_RETRY_S)
+    state = GroundState()
+    try:
+        await link.start()
+        deadline = asyncio.get_event_loop().time() + 8.0
+        restart_wall_ms = asyncio.get_event_loop().time() * 1000.0 + 6000.0  # ~1s after reboot
+        frames = link.frames()
+        mission_clock_samples = []
+        checked_after_restart = False
+        while asyncio.get_event_loop().time() < deadline:
+            frame = await asyncio.wait_for(frames.__anext__(), timeout=TIMEOUT)
+            recv_wall_ms = time.time() * 1000.0
+            if frame.kind != wire.SK_RX_FROM_ROVER:
+                continue
+            try:
+                decoded = wire.decode_message(frame.payload)
+            except wire.WireError:
+                continue
+            if isinstance(decoded, tuple):
+                scan, part, parts = decoded
+                state.ingest_scan_fragment(scan, part, parts, int(recv_wall_ms))
+            else:
+                state.ingest(decoded, rssi=None, recv_wall_ms=recv_wall_ms)
+
+            if state.mission_start_wall_ms is not None:
+                mission_clock_samples.append(state.mission_start_wall_ms)
+
+            now_loop_ms = asyncio.get_event_loop().time() * 1000.0
+            if now_loop_ms >= restart_wall_ms:
+                checked_after_restart = True
+                block = state.link.to_block(
+                    now_wall_ms=recv_wall_ms, connected=True, serial_port="COM5",
+                )
+                # None (not enough samples yet) is fine -- "unknown" is not
+                # a false reading. Any numeric value must be < 2%: the old
+                # straggler bug produced ~96% and 6s of STALE.
+                assert block.loss_pct is None or block.loss_pct < 2.0, (
+                    f"loss_pct={block.loss_pct} at t_loop={now_loop_ms}"
+                )
+                assert block.state != "STALE"
+
+        assert checked_after_restart
+        restart_events = [e for e in state.events if e.code == "ROVER_RESTART"]
+        assert len(restart_events) == 1
+        # mission_start_wall_ms is set once and never changes once set.
+        assert len(set(mission_clock_samples)) == 1
+
+        final_block = state.link.to_block(
+            now_wall_ms=time.time() * 1000.0, connected=True, serial_port="COM5",
+        )
+        assert final_block.loss_pct is not None and final_block.loss_pct < 2.0
+    finally:
+        await link.stop()
+        server.close()
+        await server.wait_closed()
 
 
 async def _start_simulator_with_registry(port: int = 0):

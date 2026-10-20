@@ -154,6 +154,65 @@ async def test_second_client_rejected():
         await server.wait_closed()
 
 
+async def test_auto_mode_rejected_with_ack_ok_false():
+    from ground_station.app.protocol import CmdDrive, CmdMsg, CmdServo
+
+    server, port = await _start()
+    try:
+        reader, writer = await _connect(port)
+        try:
+            cmd = CmdMsg(
+                t=0, seq=1, drive=CmdDrive(l=0.5, r=0.5), mode="auto", servo=CmdServo(),
+            )
+            frame = wire.encode_serial_frame(wire.SK_TX_TO_ROVER, 0, wire.encode_cmd(cmd))
+            writer.write(frame)
+            await writer.drain()
+
+            saw_ack_rejected = False
+            saw_cmd_rejected_event = False
+            for _ in range(60):
+                kind, decoded = await _read_message(reader)
+                if decoded is None:
+                    continue
+                if type(decoded).__name__ == "AckMsg" and decoded.ack_seq == 1:
+                    assert decoded.ok is False
+                    saw_ack_rejected = True
+                if type(decoded).__name__ == "EventMsg" and decoded.code == "CMD_REJECTED":
+                    saw_cmd_rejected_event = True
+                if saw_ack_rejected and saw_cmd_rejected_event:
+                    break
+            assert saw_ack_rejected
+            assert saw_cmd_rejected_event
+        finally:
+            writer.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_reboot_after_resets_seq_and_resends_hello():
+    server, port = await _start(["--reboot-after", "0.2"])
+    try:
+        reader, writer = await _connect(port)
+        try:
+            max_seq_seen = -1
+            saw_seq_drop = False
+            for _ in range(400):
+                kind, decoded = await _read_message(reader)
+                if decoded is None:
+                    continue
+                if decoded.seq < max_seq_seen and max_seq_seen > 3:
+                    saw_seq_drop = True
+                    break
+                max_seq_seen = max(max_seq_seen, decoded.seq)
+            assert saw_seq_drop
+        finally:
+            writer.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 async def test_malformed_frame_does_not_crash_server():
     server, port = await _start()
     try:

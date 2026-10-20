@@ -85,3 +85,7 @@ class ScanReassembler:
                 del self._pending[key]
                 return pending.to_scan()
         return None
+
+    def reset(self) -> None:
+        """Drop all partial fragments — a rover restart invalidates them."""
+        self._pending.clear()
