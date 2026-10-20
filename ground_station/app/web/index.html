@@ -58,18 +58,32 @@
 
     <section id="panel-environment" class="panel">
       <h2>Environment</h2>
-      <div class="placeholder-body">temp / hum / press / lux + 5-min sparklines</div>
+      <div id="env-widget"></div>
     </section>
 
     <section id="panel-health" class="panel">
       <h2>Rover Health</h2>
-      <div class="placeholder-body" style="flex-direction:column; align-items:stretch; gap:0.4rem;">
-        <div style="color:var(--text-dim); font-size:0.8rem;">motors / attitude / sonar — placeholder</div>
+      <div class="health-body">
+        <div>
+          <div class="subhead">Motors</div>
+          <div id="motor-widget"></div>
+        </div>
+        <div>
+          <div class="subhead">Attitude</div>
+          <div id="attitude-widget"></div>
+        </div>
+        <div>
+          <div class="subhead">Sonar</div>
+          <div id="sonar-widget"></div>
+        </div>
         <div>
           <div class="subhead">Power</div>
           <div id="power-widget"></div>
         </div>
-        <div style="color:var(--text-dim); font-size:0.8rem;">sys: heap / loop Hz / uptime — placeholder</div>
+        <div>
+          <div class="subhead">Sys</div>
+          <div id="sysstats-widget"></div>
+        </div>
       </div>
     </section>
 

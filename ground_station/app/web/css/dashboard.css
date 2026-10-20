@@ -240,3 +240,84 @@ html, body {
   color: var(--text-dim);
   margin: 0.4rem 0 0.2rem 0;
 }
+
+/* ------------------------------------------------------------ environment */
+
+#env-widget { display: flex; flex-direction: column; gap: 0.5rem; }
+.env-field { display: flex; flex-direction: column; gap: 0.1rem; }
+.env-field-top { display: flex; justify-content: space-between; }
+.env-field-top .k { color: var(--text-dim); }
+.env-field-minmax { font-size: 0.7rem; color: var(--text-dim); }
+
+.sparkline {
+  width: 100%;
+  height: 24px;
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------ rover health */
+
+.health-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow-y: auto;
+}
+
+.motor-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+.motor-row .k { color: var(--text-dim); width: 1rem; }
+.motor-bar {
+  position: relative;
+  flex: 1;
+  height: 10px;
+  border: 1px solid var(--text-dim);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.motor-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0%;
+}
+.motor-bar-fill.cmd { background: var(--accent); }
+.motor-bar-fill.rpm { background: var(--text-dim); }
+.motor-row .v { width: 3rem; text-align: right; }
+
+.attitude-widget {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.attitude-horizon, .attitude-compass {
+  width: 56px;
+  height: 56px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.attitude-readout { display: flex; flex-direction: column; gap: 0.1rem; font-size: 0.8rem; }
+.attitude-readout .row { display: flex; justify-content: space-between; gap: 0.5rem; }
+.attitude-readout .k { color: var(--text-dim); }
+
+.sonar-widget {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.sonar-radar {
+  width: 80px;
+  height: 44px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.sonar-widget .v { font-size: 0.9rem; }
+
+.sysstats-widget { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.8rem; }
+.sysstats-widget .row { display: flex; justify-content: space-between; gap: 0.5rem; }
+.sysstats-widget .k { color: var(--text-dim); }

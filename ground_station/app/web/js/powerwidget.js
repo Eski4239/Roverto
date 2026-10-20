@@ -3,13 +3,16 @@
 // `simulator/fake_rover.py --ina219` must flip hw.current.present without any
 // frontend change.
 import { renderField } from "./hwstate.js";
+import { Sparkline } from "./sparkline.js";
 
 export class PowerWidget {
   constructor(root) {
     this.root = root;
+    this._sparkEl = null;
+    this._spark = null;
   }
 
-  render(snapshot) {
+  render(snapshot, nowWallMs) {
     const hello = snapshot.hello;
     const telem = snapshot.telem;
     const linkLost = snapshot.link && (snapshot.link.state === "LOST" || snapshot.link.state === "NO_BRIDGE");
@@ -46,7 +49,15 @@ export class PowerWidget {
         <div class="row"><span class="k">I</span><span class="${ibat.cls}">${ibat.text}</span></div>
         <div class="row"><span class="k">W</span><span class="${pwr.cls}">${pwr.text}</span></div>
         <div class="row"><span class="k">SoC</span><span class="${soc.cls}">${soc.text}</span></div>
+        <svg class="sparkline" id="power-soc-spark"></svg>
       </div>
     `;
+    const sparkEl = document.getElementById("power-soc-spark");
+    if (sparkEl !== this._sparkEl) {
+      this._sparkEl = sparkEl;
+      this._spark = new Sparkline(sparkEl);
+    }
+    const history = snapshot.history || {};
+    this._spark.render(history.soc_pct, nowWallMs ?? Date.now());
   }
 }

@@ -296,6 +296,12 @@ class GroundState:
         self.ring_hum_pct = RingBuffer()
         self.ring_press_hpa = RingBuffer()
         self.ring_lux = RingBuffer()
+        self.ring_soc_pct = RingBuffer()
+
+        # Session min/max (docs/03 §2 "min/max of session") -- unlike the
+        # ring buffers above, these never trim: they must survive past the
+        # 5-minute window for as long as this GroundState lives.
+        self._session_minmax: dict[str, tuple[float, float]] = {}
 
         self._last_t_ms: Optional[int] = None
         self._newest_post_restart_t_ms: Optional[int] = None
@@ -377,6 +383,12 @@ class GroundState:
             self._newest_post_restart_seq = seq
         return True
 
+    def _update_session_minmax(self, field: str, value: Optional[float]) -> None:
+        if value is None:
+            return
+        lo, hi = self._session_minmax.get(field, (value, value))
+        self._session_minmax[field] = (min(lo, value), max(hi, value))
+
     def needs_hello_request(self) -> bool:
         return self._awaiting_hello_request
 
@@ -402,6 +414,11 @@ class GroundState:
             self.ring_hum_pct.append(msg.t, msg.env.hum_pct)
             self.ring_press_hpa.append(msg.t, msg.env.press_hpa)
             self.ring_lux.append(msg.t, msg.light.lux)
+            self.ring_soc_pct.append(msg.t, msg.pwr.soc_pct)
+            self._update_session_minmax("temp_c", msg.env.temp_c)
+            self._update_session_minmax("hum_pct", msg.env.hum_pct)
+            self._update_session_minmax("press_hpa", msg.env.press_hpa)
+            self._update_session_minmax("lux", msg.light.lux)
         elif isinstance(msg, EventMsg):
             if not self._check_restart(
                 msg.t, msg.seq, recv_wall_ms, is_hello=False, hello_seq=None,
@@ -464,6 +481,16 @@ class GroundState:
                 for e in recent_events
             ],
             "mission_start_wall_ms": self.mission_start_wall_ms,
+            "history": {
+                "temp_c": self.ring_temp_c.values(),
+                "hum_pct": self.ring_hum_pct.values(),
+                "press_hpa": self.ring_press_hpa.values(),
+                "lux": self.ring_lux.values(),
+                "soc_pct": self.ring_soc_pct.values(),
+            },
+            "session_minmax": {
+                field: list(bounds) for field, bounds in self._session_minmax.items()
+            },
             "link": self.link.to_block(
                 now_wall_ms=now_wall_ms, connected=connected, serial_port=serial_port,
             ).model_dump(),

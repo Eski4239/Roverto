@@ -9,7 +9,7 @@ from ground_station.app.protocol import (
     HwImu, HwLidar, HwLight, HwSonar, TelemEnv, TelemImu, TelemLight, TelemMot,
 )
 from ground_station.app.protocol import TelemMsg, TelemOdom, TelemPwr, TelemSonar, TelemState, TelemSys
-from ground_station.app.state import GroundState, LinkTracker
+from ground_station.app.state import RING_WINDOW_MS, GroundState, LinkTracker
 
 
 def _telem(seq: int, t: int = 0) -> TelemMsg:
@@ -21,6 +21,13 @@ def _telem(seq: int, t: int = 0) -> TelemMsg:
         state=TelemState(mode="idle", estop=False, wd_ok=True, last_cmd_age_ms=0),
         sys=TelemSys(rssi_dbm=-60, heap_b=1000, uptime_s=1, loop_hz=100),
     )
+
+
+def _telem_env(seq: int, t: int, *, temp_c: Optional[float] = None, soc_pct: Optional[float] = None) -> TelemMsg:
+    msg = _telem(seq, t)
+    msg.env.temp_c = temp_c
+    msg.pwr.soc_pct = soc_pct
+    return msg
 
 
 def _feed_seqs(tracker: LinkTracker, seqs: list[int], *, step_ms: float = 100.0, start_ms: float = 1000.0) -> Optional[float]:
@@ -185,6 +192,32 @@ def test_ground_state_ingest_telem_updates_snapshot():
     assert snap["telem"]["seq"] == 1
     assert snap["link"]["state"] == "OK"
     assert snap["link"]["rssi_rover_dbm"] == -60
+
+
+def test_snapshot_history_and_session_minmax_track_env_values():
+    state = GroundState()
+    state.ingest(_telem_env(1, t=500, temp_c=20.0, soc_pct=80.0), rssi=-55, recv_wall_ms=1000.0)
+    state.ingest(_telem_env(2, t=600, temp_c=25.0, soc_pct=79.0), rssi=-55, recv_wall_ms=1100.0)
+    state.ingest(_telem_env(3, t=700, temp_c=18.0, soc_pct=81.0), rssi=-55, recv_wall_ms=1200.0)
+    snap = state.snapshot(now_wall_ms=1300.0, connected=True, serial_port="COM5")
+
+    assert snap["history"]["temp_c"] == [(500, 20.0), (600, 25.0), (700, 18.0)]
+    assert snap["history"]["soc_pct"] == [(500, 80.0), (600, 79.0), (700, 81.0)]
+    assert snap["session_minmax"]["temp_c"] == [18.0, 25.0]
+
+
+def test_session_minmax_survives_past_ring_window_while_ring_trims():
+    """docs/03 §2: Environment shows 'min/max of session', distinct from the
+    5-min sparkline window -- an old extreme value must stay in min/max even
+    after the ring buffer has trimmed it out."""
+    state = GroundState()
+    state.ingest(_telem_env(1, t=0, temp_c=5.0), rssi=-55, recv_wall_ms=0.0)
+    far_future_t_ms = RING_WINDOW_MS + 60_000
+    state.ingest(_telem_env(2, t=far_future_t_ms, temp_c=22.0), rssi=-55, recv_wall_ms=far_future_t_ms)
+    snap = state.snapshot(now_wall_ms=far_future_t_ms + 10.0, connected=True, serial_port="COM5")
+
+    assert snap["history"]["temp_c"] == [(far_future_t_ms, 22.0)]
+    assert snap["session_minmax"]["temp_c"] == [5.0, 22.0]
 
 
 def test_restart_detected_from_backward_t_ms_at_30s_uptime():
