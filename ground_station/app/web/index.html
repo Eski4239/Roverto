@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rover Ground Station — debug</title>
+<style>
+  body { background: #111; color: #ddd; font-family: monospace; margin: 1rem; }
+  #link-state { font-size: 2rem; font-weight: bold; }
+  #link-state.OK { color: #4caf50; }
+  #link-state.STALE { color: #ff9800; }
+  #link-state.LOST, #link-state.NO_BRIDGE { color: #f44336; }
+  pre { background: #1a1a1a; padding: 1rem; overflow: auto; }
+</style>
+</head>
+<body>
+  <h1>Rover Ground Station — debug view</h1>
+  <p>Link state: <span id="link-state">—</span></p>
+  <pre id="snapshot">waiting for /ws/ui…</pre>
+<script>
+  const ws = new WebSocket(`ws://${location.host}/ws/ui`);
+  const linkState = document.getElementById("link-state");
+  const snapshotEl = document.getElementById("snapshot");
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    const state = data.link ? data.link.state : "—";
+    linkState.textContent = state;
+    linkState.className = state;
+    snapshotEl.textContent = JSON.stringify(data, null, 2);
+  };
+  ws.onclose = () => {
+    linkState.textContent = "DISCONNECTED";
+    linkState.className = "LOST";
+  };
+</script>
+</body>
+</html>
