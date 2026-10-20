@@ -68,7 +68,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | D-012 | **Simulator parity for CmdMsg handling** (mirror `fake_rover.py` `apply_cmd`): ack rule (a) is not evaluated on the first CmdMsg after boot (no previous to compare); if one CmdMsg carries both `estop` and `estop_reset`, reset wins (latch released); servo and mode are applied even while E-STOP is latched, drive is not. | PROPOSED | none (matches sim) |
 | D-013 | **Motors provisional: Arduino-kit TT gear motors (3–6 V).** `PWM_MAX` is a constant in `config.h`; until the TB6612 VM supply is confirmed, default **PWM_MAX = 120** (≈6 V average from a 12.6 V battery). `drive = ±1.0` maps to ±PWM_MAX. Re-tune when the final motors are chosen. | PROPOSED | ⚠ `pwm_l/r` on the wire peak at ±PWM_MAX, not ±255 |
 | D-014 | **Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1). | PROPOSED | see GS-1 |
-| D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | PROPOSED | ⚠ GS can use `t_ms` going backwards to detect a reboot (GS-2) |
+| D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | **AGREED** 2026-10-20 (GS: Pablo) — details in GS-2 | ⚠ GS detects a reboot by `t_ms` going backwards (GS-2) |
 
 ## 4. Open questions (answer here, then turn into decisions)
 
@@ -99,8 +99,27 @@ rover_main plan (each step is flashed and tested on its own before the next):
   uptime (typical: brownout at the first motor start) jumps back < 1000 and is missed → wrong loss %
   for 10 s. Suggest also resetting when a HELLO / TELEM header `t_ms` goes backwards vs the last one
   received (rover `millis()` restarts at 0 on every boot; it only wraps after 49 days). See D-015.
+  **AGREED 2026-10-20 (GS side, Pablo).** Implementation on the GS side (`state.py`), in this order:
+  1. **Primary:** `t_ms` of any rover message < `last_t_ms − 500` → rover restart. Tolerance 500 ms
+     covers any reordering; `t_ms` is one clock per sender (same idea as D-003).
+     Exception: `last_t_ms > 2^32 − 60 000` and new `t_ms` small → `millis()` wrap (49.7 days), not a restart.
+  2. **Secondary:** HELLO with `seq == 0` → restart (catches a reboot even if the first TELEM is lost).
+  3. **Fallback:** keep the backward seq jump ≥ `RESTART_BACKWARD_JUMP`.
+  On restart: reset loss window + seq baseline, drop pending RTT timestamps and partial scan
+  fragments, emit GS event `ROVER_RESTART` with the `reset_reason` from the next HELLO
+  (BROWNOUT / PANIC / *WDT → warn). Mission clock keeps running. A link reconnect (bridge/USB)
+  is *not* a rover restart.
+  **GS also:** if TELEM arrives but no HELLO has been seen since the restart, set
+  `CMD_REQUEST_HELLO` on the next CmdMsgs until a HELLO arrives (D-015's "HELLO first" can be lost
+  on the radio). Simulator gets a `--reboot-after N` flag to test this without killing the process.
 
 ## 5. Session log (newest first)
+
+### 2026-10-20 (3) — GS reply (Pablo + Claude)
+- **D-015 and GS-2 AGREED** with the detection order and refinements written under GS-2
+  (t_ms primary, HELLO seq 0 secondary, seq jump fallback; request HELLO if missing).
+  Also recorded in docs/02 §6.10. GS implementation is done before Phase 5.
+- Other PROPOSED items (D-001…D-014, Q-3…Q-5): GS reply follows in the next entry.
 
 ### 2026-10-20 (2) — answers + review of GS Phases 2–4
 - Q-1 answered: Eski4239 owns `ground_bridge`.

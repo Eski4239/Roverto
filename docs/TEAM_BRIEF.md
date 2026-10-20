@@ -68,6 +68,8 @@ Read before doing any work:
 - `docs/03_DASHBOARD_SPEC.md` — panels, behaviour, "not installed" states
 - `docs/04_FUTURE_HARDWARE.md` — pin plan + hardware we don't have yet (software must be ready for it)
 - `docs/06_CLAUDE_CODE_PROMPTS.md` — the build sequence we follow
+- `docs/PROGRESS_ROVER_MAIN.md` — rover_main progress, design decisions (PROPOSED/AGREED) and open
+  questions; check its "GS impact" items before changing anything that talks to the rover
 
 ### Hard rules
 1. **Protocol first.** A field change updates, in one commit: `docs/02`, `rover_protocol.h`,
@@ -451,6 +453,12 @@ Regenerate: `g++ -std=c++17 -I firmware/common tools/golden_gen.cpp -o golden_ge
    servo values alone don't trigger (a).
 9. **E-STOP sending** — the GS sets `CMD_ESTOP` on the next 3 CmdMsgs, then clears the bit; the
    latch lives on the rover. Clearing the bit does not release the latch — only `CMD_ESTOP_RESET` does.
+10. **Rover restart / time base** (D-015, GS-2 in docs/PROGRESS_ROVER_MAIN.md) — on every boot the
+    rover starts `seq` at 0 and `t_ms` = `millis()` (0 at boot, wraps after 49.7 days), and sends a
+    HELLO (with `reset_reason`) before any TELEM. The GS declares a rover restart when `t_ms` goes
+    back by more than 500 ms (except a 49.7-day wrap), or on a HELLO with `seq == 0`, or on a
+    backward `seq` jump ≥ 1000; it then resets loss/RTT/scan state and logs `ROVER_RESTART`. If the
+    GS has TELEM but no HELLO since the restart, it sets `CMD_REQUEST_HELLO` until one arrives.
 
 ---
 
