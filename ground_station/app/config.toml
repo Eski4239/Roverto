@@ -1,0 +1,33 @@
+# Thresholds — docs/03_DASHBOARD_SPEC.md §2 "Thresholds" table.
+# Populated fully in Phase 3/5 (docs/06); placeholder for now.
+
+[link]
+default_port = "COM5"
+baud = 921600
+
+[camera]
+camera_url = "http://192.168.4.1"
+
+[thresholds.vbat_v]
+green_above = 11.1
+red_below = 10.5
+
+[thresholds.roll_pitch_deg]
+green_below = 20
+red_above = 30
+
+[thresholds.rssi_dbm]
+green_above = -67
+red_below = -80
+
+[thresholds.sonar_dist_cm]
+green_above = 50
+red_below = 20
+
+[thresholds.last_cmd_age_ms]
+green_below = 200
+red_above = 500
+
+[thresholds.chip_temp_c]
+green_below = 60
+red_above = 75
