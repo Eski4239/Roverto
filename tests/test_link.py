@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Optional
 
 from ground_station.app import wire
 from ground_station.app.link import Link
@@ -185,6 +186,88 @@ async def test_reboot_after_recovers_loss_pct_and_mission_clock():
         final_block = state.link.to_block(
             now_wall_ms=time.time() * 1000.0, connected=True, serial_port="COM5",
         )
+        assert final_block.loss_pct is not None and final_block.loss_pct < 2.0
+    finally:
+        await link.stop()
+        server.close()
+        await server.wait_closed()
+
+
+async def test_rover_silent_then_resumes_without_restart():
+    """End-to-end for docs/06's silent-rover check: --rover-silent-after N
+    --rover-silent-for M must take the link OK -> LOST (~2s after the
+    rover goes quiet) -> OK again once it resumes, with no ROVER_RESTART
+    (t_ms keeps running, unlike --reboot-after) and loss_pct back under 2%
+    within 10s of resuming."""
+    silent_after = 1.0
+    silent_for = 3.0
+    args = parse_args(["--rover-silent-after", str(silent_after), "--rover-silent-for", str(silent_for)])
+    args.host = "127.0.0.1"
+    args.port = 0
+    server = await run_server(args)
+    port = server.sockets[0].getsockname()[1]
+
+    link = Link(f"socket://127.0.0.1:{port}", reconnect_retry_s=RECONNECT_RETRY_S)
+    state = GroundState()
+    try:
+        await link.start()
+        start_loop = asyncio.get_event_loop().time()
+        deadline = start_loop + silent_after + silent_for + 12.0
+        frames = link.frames()
+
+        saw_ok_before_silence = False
+        saw_lost_during_silence = False
+        saw_ok_after_resume = False
+        resume_loop_t: Optional[float] = None
+        recovered_at: Optional[float] = None
+
+        while asyncio.get_event_loop().time() < deadline:
+            frame = await asyncio.wait_for(frames.__anext__(), timeout=TIMEOUT)
+            recv_wall_ms = time.time() * 1000.0
+            if frame.kind == wire.SK_RX_FROM_ROVER:
+                try:
+                    decoded = wire.decode_message(frame.payload)
+                except wire.WireError:
+                    decoded = None
+                if decoded is not None:
+                    if isinstance(decoded, tuple):
+                        scan, part, parts = decoded
+                        state.ingest_scan_fragment(scan, part, parts, int(recv_wall_ms))
+                    else:
+                        state.ingest(decoded, rssi=None, recv_wall_ms=recv_wall_ms)
+                    now_loop = asyncio.get_event_loop().time()
+                    if now_loop >= start_loop + silent_after + silent_for and resume_loop_t is None:
+                        resume_loop_t = now_loop
+
+            now_loop = asyncio.get_event_loop().time()
+            block = state.link.to_block(now_wall_ms=recv_wall_ms, connected=True, serial_port="COM5")
+
+            if now_loop < start_loop + silent_after - 0.3 and block.state == "OK":
+                saw_ok_before_silence = True
+            if now_loop >= start_loop + silent_after + 2.0 and now_loop < start_loop + silent_after + silent_for:
+                if block.state == "LOST":
+                    saw_lost_during_silence = True
+            if resume_loop_t is not None and now_loop >= resume_loop_t:
+                if block.state == "OK":
+                    saw_ok_after_resume = True
+                    if recovered_at is None:
+                        recovered_at = now_loop
+                # the docs/06 check is "loss back under 2% within 10s of
+                # resuming" -- not instantly: a fresh straggler from right
+                # before the silence can transiently inflate loss_pct until
+                # enough post-resume samples replace it (see
+                # test_reboot_after_recovers_loss_pct_and_mission_clock).
+                if recovered_at is not None and now_loop - recovered_at >= 10.0:
+                    assert block.loss_pct is None or block.loss_pct < 2.0, (
+                        f"loss_pct={block.loss_pct} at t={now_loop - recovered_at:.1f}s after resume"
+                    )
+
+        assert saw_ok_before_silence
+        assert saw_lost_during_silence
+        assert saw_ok_after_resume
+        assert not [e for e in state.events if e.code == "ROVER_RESTART"]
+
+        final_block = state.link.to_block(now_wall_ms=time.time() * 1000.0, connected=True, serial_port="COM5")
         assert final_block.loss_pct is not None and final_block.loss_pct < 2.0
     finally:
         await link.stop()

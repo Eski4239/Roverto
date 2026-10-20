@@ -141,6 +141,11 @@ class RoverState:
     reboot_after_s: Optional[float] = None
     rebooted: bool = False
 
+    silent_after_s: Optional[float] = None
+    silent_for_s: Optional[float] = None
+    silent_started_mono: Optional[float] = None
+    silent_done: bool = False
+
     def now_ms(self) -> int:
         return int((time.monotonic() - self.start_mono) * 1000)
 
@@ -191,6 +196,25 @@ class RoverState:
         self.pending_events.clear()
         self.pending_acks.clear()
         self.scan_id = 0
+
+    def is_silent(self) -> bool:
+        """--rover-silent-after N --rover-silent-for M: the rover stops
+        sending HELLO/TELEM/SCAN/EVENT/ACK for M s starting at uptime N s,
+        then resumes with t_ms/seq untouched (no reboot). BRIDGE_STATUS is
+        not gated by this -- it's emitted by the driver loop unconditionally,
+        matching a real bridge that keeps reporting link status even when
+        the rover itself has gone quiet."""
+        if self.silent_after_s is None or self.silent_for_s is None or self.silent_done:
+            return False
+        elapsed = time.monotonic() - self.start_mono
+        if self.silent_started_mono is None:
+            if elapsed < self.silent_after_s:
+                return False
+            self.silent_started_mono = time.monotonic()
+        if time.monotonic() - self.silent_started_mono >= self.silent_for_s:
+            self.silent_done = True
+            return False
+        return True
 
     def tick(self) -> None:
         """Advance drift/decay and enforce safety rules. Call at ~10 Hz."""
@@ -593,26 +617,31 @@ async def _driver_loop(state: RoverState, registry: _ClientRegistry, args: argpa
     while True:
         now = loop.time()
         state.tick()
+        silent = state.is_silent()
 
-        if state.hello_requested or now >= next_hello:
+        if not silent and (state.hello_requested or now >= next_hello):
             state.hello_requested = False
             next_hello = _advance_deadline(next_hello, HELLO_PERIOD_S, now)
             payload = wire.encode_hello(state.build_hello())
             _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, payload, args.lossy)
 
-        telem_payload = wire.encode_telem(state.build_telem())
-        _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, telem_payload, args.lossy)
+        if not silent:
+            telem_payload = wire.encode_telem(state.build_telem())
+            _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, telem_payload, args.lossy)
 
         if now >= next_scan:
             next_scan = _advance_deadline(next_scan, scan_period, now)
-            for frag in state.build_scan_fragments():
-                _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, frag, args.lossy)
+            if not silent:
+                for frag in state.build_scan_fragments():
+                    _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, frag, args.lossy)
 
-        for ack in state.drain_pending_acks():
-            _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_ack(ack), args.lossy)
-
-        for ev in state.drain_pending_events():
-            _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_event(ev), args.lossy)
+        pending_acks = state.drain_pending_acks()
+        pending_events = state.drain_pending_events()
+        if not silent:
+            for ack in pending_acks:
+                _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_ack(ack), args.lossy)
+            for ev in pending_events:
+                _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_event(ev), args.lossy)
 
         if now >= next_status:
             next_status = _advance_deadline(next_status, BRIDGE_STATUS_PERIOD_S, now)
@@ -636,6 +665,8 @@ def build_state(args: argparse.Namespace) -> RoverState:
         lidar=args.lidar,
         pwm_max=args.pwm_max,
         reboot_after_s=args.reboot_after,
+        silent_after_s=args.rover_silent_after,
+        silent_for_s=args.rover_silent_for,
     )
     return state
 
@@ -658,6 +689,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--reboot-after", type=float, default=None,
         help="simulate one rover reboot at this uptime in seconds (GS-2 testing)",
+    )
+    parser.add_argument(
+        "--rover-silent-after", type=float, default=None, dest="rover_silent_after",
+        help="stop HELLO/TELEM/SCAN/EVENT/ACK at this uptime in seconds (BRIDGE_STATUS keeps flowing)",
+    )
+    parser.add_argument(
+        "--rover-silent-for", type=float, default=None, dest="rover_silent_for",
+        help="how long the rover stays silent, in seconds (requires --rover-silent-after)",
     )
     return parser.parse_args(argv)
 
