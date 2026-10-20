@@ -53,6 +53,7 @@ Clone the repo; Claude Code reads `CLAUDE.md` automatically, and the prompts in 
 6. firmware/common/rover_protocol.h
 7. VS Code + Claude Code setup (docs/05)
 8. Build prompts (docs/06)
+9. rover_main progress log & agreed decisions (docs/PROGRESS_ROVER_MAIN.md)
 
 ---
 
@@ -67,6 +68,7 @@ PARTS = [
     ("6. rover_protocol.h", "firmware/common/rover_protocol.h", "cpp"),
     ("7. VS Code setup", "docs/05_VSCODE_SETUP.md", None),
     ("8. Build prompts", "docs/06_CLAUDE_CODE_PROMPTS.md", None),
+    ("9. rover_main progress & decisions", "docs/PROGRESS_ROVER_MAIN.md", None),
 ]
 
 

@@ -44,8 +44,8 @@ Reserve these now so future hardware never forces a rewire. Verify against your 
 5. ✔ Test: breathe on it → humidity rises; lift 1 m → `alt_m` changes ~ +1 m (noisy, ±0.5 m).
 
 ### B. Battery voltage divider (now)
-1. 100 kΩ (top) / 33 kΩ (bottom) from battery + to GND, mid-point → GPIO34. 100 nF cap mid-point → GND.
-2. Firmware: average 16 samples, `analogReadMilliVolts()`, multiply by (133/33), then a 2-point
+1. 100 kΩ (top) / 22 kΩ (bottom) (D-002: keeps 12.6 V at 2.27 V, inside the accurate ADC range) from battery + to GND, mid-point → GPIO34. 100 nF cap mid-point → GND.
+2. Firmware: average 16 samples, `analogReadMilliVolts()`, multiply by (122/22), then a 2-point
    calibration against a multimeter (9.5 V and 12.4 V).
 3. SoC from a 3S Li-ion lookup table (not linear). Low-pass filter so it doesn't jump when motors start.
 4. ✔ Test: dashboard reading within ±0.1 V of the multimeter across the range.
@@ -106,4 +106,4 @@ servo noise resetting the ESP32. Add 470 µF on each 5 V rail.
 - [ ] INA219 module
 - [ ] LDROBOT LD06 or LD19 LiDAR
 - [ ] 1× MP1584EN extra + 2× 470 µF capacitors
-- [ ] Resistors for dividers: 100 k, 33 k, 1 k, 2 k (probably on hand)
+- [ ] Resistors for dividers: 100 k, 22 k, 1 k, 2 k (probably on hand)

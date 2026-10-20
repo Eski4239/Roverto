@@ -67,7 +67,7 @@ Tells the dashboard **which hardware exists**. Wire: `HelloMsg` (`hw_present` bi
 | env | BME280 now | `alt_m` relative to pressure at boot |
 | light | BH1750 | |
 | pwr | divider now, INA219 future | `ibat_a`, `p_w` null until INA219 |
-| mot | TB6612 commands; encoders future | `pwm` −255…255, sign = direction; `rpm` null until encoders |
+| mot | TB6612 applied PWM; encoders future | `pwm` = PWM actually applied (after ramp, PWM_MAX and safety cut-offs), ±PWM_MAX (provisional 120, D-013), sign = direction; `rpm` null until encoders |
 | odom | encoders + IMU yaw, future | null until encoders |
 | imu | MPU-6050 | yaw drifts (no magnetometer) — expected |
 | sonar | HC-SR04 on servo | latest ping; full sweep in `scan` |
@@ -155,8 +155,13 @@ Regenerate: `g++ -std=c++17 -I firmware/common tools/golden_gen.cpp -o golden_ge
 1. No valid CmdMsg for **500 ms** → motors 0, event WD_STOP, `wd_ok=false`. (Laptop crash, bridge
    unplugged, out of range — all end here.)
 2. `estop` latched → motors 0 regardless of drive, until `estop_reset`.
-3. |roll| or |pitch| > 35° → motors 0, event TILT.
-4. `vbat_v` < 9.9 V → BATT_CRIT, drive limited to 30 %.
+3. |roll| or |pitch| > 35° → motors 0, event TILT. Auto-resume only when both are < 30° **and** a
+   CmdMsg with zero drive has been received (Q-3).
+4. `vbat_v` < 10.5 V for 3 s → BATT_LOW (warn). `vbat_v` < 9.9 V for 3 s → BATT_CRIT, drive limited
+   to 30 %. Both clear 0.2 V above their threshold (Q-4). Events once per state change.
+4b. Modes (Q-5): `manual` = drive as commanded; `assisted` = manual, but forward drive blocked while
+   front sonar < 20 cm (OBSTACLE event); `auto` = rejected (AckMsg ok=0 + CMD_REJECTED) until
+   navigation exists; `idle` = motors 0.
 5. CmdMsg with wrong magic/version or from an unknown MAC → ignored, CMD_REJECTED event (rate-limited).
 
 ## 6. Clarifications (decided after the Phase 0 review, 2026-10-20)
