@@ -14,6 +14,35 @@ How to use this file
 
 ---
 
+## 0. Current focus (update at the end of every session)
+
+**Now:** R0 — Victor installing PlatformIO in VS Code. USB driver done.
+**R0 test project** (outside the repo, e.g. `C:\dev\mac_test`) to validate the pioarduino toolchain
+and read each board's MAC:
+```ini
+[env:esp32]
+platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip
+board = esp32doit-devkit-v1
+framework = arduino
+monitor_speed = 115200
+```
+```cpp
+#include <WiFi.h>
+void setup() { Serial.begin(115200); WiFi.mode(WIFI_STA); }
+void loop()  { Serial.println(WiFi.macAddress()); delay(1000); }
+```
+**Board MACs** (WiFi STA MAC; boards physically labelled):
+
+| Board | Role | MAC |
+|-------|------|-----|
+| ESP32 #1 | rover_main | _pending_ |
+| ESP32 #2 | ground_bridge | _pending_ |
+
+**Next:** fill in the MACs → R1 skeleton of `firmware/rover_main`.
+
+**Session ritual for any agent working on rover_main:** at start `git pull`; at the end update §0,
+§2 status and §5 session log, commit and push.
+
 ## 1. Ownership
 
 | Area | Owner | Notes |

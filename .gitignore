@@ -16,3 +16,5 @@ Thumbs.db
 # Build artifacts
 golden_gen
 golden_gen.exe
+# Personal Claude Code instructions (each dev keeps their own)
+CLAUDE.local.md
