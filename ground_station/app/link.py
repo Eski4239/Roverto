@@ -230,8 +230,17 @@ class Link:
     # ------------------------------------------------------------- heartbeat ----
 
     async def _heartbeat_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        next_tick = loop.time()
         while True:
-            await asyncio.sleep(self.HEARTBEAT_PERIOD_S)
+            next_tick += self.HEARTBEAT_PERIOD_S
+            now = loop.time()
+            if next_tick < now - self.HEARTBEAT_PERIOD_S:
+                # fallen more than one period behind: resync instead of
+                # bursting through the missed ticks back-to-back.
+                next_tick = now + self.HEARTBEAT_PERIOD_S
+            await asyncio.sleep(max(0.0, next_tick - loop.time()))
+
             with self._pending_lock:
                 cmd = self._pending_cmd
             if cmd is None:

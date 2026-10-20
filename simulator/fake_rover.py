@@ -435,19 +435,33 @@ async def handle_client(
         log.info("client disconnected: %s", peer)
 
 
+def _advance_deadline(next_t: float, period: float, now: float) -> float:
+    """Advance a monotonic deadline by one period. If we've fallen more than
+    one period behind (e.g. a slow tick), resync to `now + period` instead
+    of bursting through all the missed ticks back-to-back."""
+    next_t += period
+    if next_t < now - period:
+        next_t = now + period
+    return next_t
+
+
 async def _driver_loop(state: RoverState, registry: _ClientRegistry, args: argparse.Namespace) -> None:
-    next_hello = 0.0
-    next_scan = 0.0
-    next_status = 0.0
+    loop = asyncio.get_running_loop()
     scan_period = LIDAR_SCAN_PERIOD_S if args.lidar else SONAR_SCAN_PERIOD_S
 
+    now = loop.time()
+    next_tick = now
+    next_hello = now
+    next_scan = now
+    next_status = now
+
     while True:
-        now = time.monotonic()
+        now = loop.time()
         state.tick()
 
         if state.hello_requested or now >= next_hello:
             state.hello_requested = False
-            next_hello = now + HELLO_PERIOD_S
+            next_hello = _advance_deadline(next_hello, HELLO_PERIOD_S, now)
             payload = wire.encode_hello(state.build_hello())
             _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, payload, args.lossy)
 
@@ -455,7 +469,7 @@ async def _driver_loop(state: RoverState, registry: _ClientRegistry, args: argpa
         _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, telem_payload, args.lossy)
 
         if now >= next_scan:
-            next_scan = now + scan_period
+            next_scan = _advance_deadline(next_scan, scan_period, now)
             for frag in state.build_scan_fragments():
                 _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, frag, args.lossy)
 
@@ -466,14 +480,15 @@ async def _driver_loop(state: RoverState, registry: _ClientRegistry, args: argpa
             _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_event(ev), args.lossy)
 
         if now >= next_status:
-            next_status = now + BRIDGE_STATUS_PERIOD_S
+            next_status = _advance_deadline(next_status, BRIDGE_STATUS_PERIOD_S, now)
             status = wire.BridgeStatus(
                 uptime_ms=state.now_ms(), rx_count=state.seq, tx_ok=state.seq, tx_fail=0,
                 channel=11, last_rssi=args.rssi, rover_paired=True,
             )
             _send_frame(registry, wire.SK_BRIDGE_STATUS, 0, wire.encode_bridge_status(status), 0)
 
-        await asyncio.sleep(TELEM_PERIOD_S)
+        next_tick = _advance_deadline(next_tick, TELEM_PERIOD_S, now)
+        await asyncio.sleep(max(0.0, next_tick - loop.time()))
 
 
 def build_state(args: argparse.Namespace) -> RoverState:
