@@ -40,6 +40,9 @@ ground_station/requirements.txt (fastapi, uvicorn, pydantic>=2, pyserial, cobs, 
 3. tests: round-trip every message type; the JSON examples from docs/02 must survive
    model -> bytes -> model; corrupted CRC and bad magic are rejected without exceptions escaping;
    lidar scan in 4 fragments reassembles; a missing fragment yields nulls.
+   Golden tests: every tests/golden/*.hex decodes to tests/golden/expected.json (float tol 1e-4)
+   and re-encodes to identical bytes; serial_frame_telem.hex passes COBS + CRC. Apply the decisions
+   in docs/02 §6.
 Set up .venv and run pytest.
 ```
 ✔ Check: `pytest -q` green.

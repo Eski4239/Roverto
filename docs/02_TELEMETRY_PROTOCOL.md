@@ -9,7 +9,8 @@
 | Serial framing (USB) | ground_bridge ⇄ laptop | §4 of this file |
 
 A field change must update **all of**: this file, `rover_protocol.h`, `wire.py`, `protocol.py`,
-`simulator/fake_rover.py`, and the golden-bytes tests — in one commit.
+`simulator/fake_rover.py`, the firmware drivers that fill/read the field, and the golden files
+(`tools/golden_gen.cpp` → `tests/golden/`) — in one commit.
 
 ## 1. Conventions
 - Wire: little-endian, packed, ≤ 250 bytes per message, header `MsgHeader` (magic `0xA7`, ver, type,
@@ -90,7 +91,7 @@ Tells the dashboard **which hardware exists**. Wire: `HelloMsg` (`hw_present` bi
 ```
 Codes: BOOT, BATT_LOW, BATT_CRIT, TILT, WD_STOP, ESTOP, SENSOR_LOST, OBSTACLE, CMD_REJECTED.
 
-### 2.5 `ack`. Wire: `AckMsg` — sent for commands whose flags or mode changed
+### 2.5 `ack`. Wire: `AckMsg` — rules in §6.8
 ```json
 {"v":1,"type":"ack","t":5010,"seq":90,"ack_seq":42,"ok":true}
 ```
@@ -137,14 +138,18 @@ crc16   = CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection, xorout 0)
 | MsgHeader | `<BBBBHI` | 10 |
 | HelloMsg | `<BBBBHI20sHBBBBBB` | 38 |
 | TelemMsg | `<BBBBHIfffffffffhhfffffffffffffffBBHbIIHf` | 129 |
-| ScanMsg header (+ `n`× `H`) | `<BBBBHIBBBBfffHHB` | 31 + 2n |
+| ScanMsg | header `<BBBBHIBBBBfffHHB` (31 B), **then** `n` × `<H` dist_cm appended — send/parse only 31 + 2n bytes | 31 + 2n |
 | EventMsg | `<BBBBHIBB60s` | 72 |
 | AckMsg | `<BBBBHIHB` | 13 |
 | CmdMsg | `<BBBBHIffBBBBff` | 30 |
 | BridgeStatus | `<IIIIBbB` | 19 |
 
-Golden-bytes tests: firmware has a serial command `dump_golden` that prints hex of a fixed TelemMsg
-and CmdMsg; the same hex lives in `tests/golden/*.hex` and Python must decode it to the expected JSON.
+Golden-bytes tests: `tests/golden/*.hex` are generated **from the real C structs** by
+`tools/golden_gen.cpp` (independent of wire.py); `tests/golden/expected.json` is the JSON each must
+decode to (floats with 1e-4 tolerance). wire.py must decode every .hex to the expected JSON and
+re-encode it to the identical bytes. In Phase 11 the firmware's `dump_golden` serial command must
+print the same hex — that closes the loop on real hardware.
+Regenerate: `g++ -std=c++17 -I firmware/common tools/golden_gen.cpp -o golden_gen && ./golden_gen tests/golden`.
 
 ## 5. Safety rules (enforced in rover_main, mirrored in the simulator)
 1. No valid CmdMsg for **500 ms** → motors 0, event WD_STOP, `wd_ok=false`. (Laptop crash, bridge
@@ -153,3 +158,29 @@ and CmdMsg; the same hex lives in `tests/golden/*.hex` and Python must decode it
 3. |roll| or |pitch| > 35° → motors 0, event TILT.
 4. `vbat_v` < 9.9 V → BATT_CRIT, drive limited to 30 %.
 5. CmdMsg with wrong magic/version or from an unknown MAC → ignored, CMD_REJECTED event (rate-limited).
+
+## 6. Clarifications (decided after the Phase 0 review, 2026-10-20)
+
+1. **Servo** — JSON: nested as `hw.sonar.servo` (bool). Wire: separate bit `HW_SERVO` (10).
+   wire.py maps the bit ⇄ `hw.sonar.servo`. No top-level `hw.servo` key.
+2. **Camera** — `HW_CAMERA` (bit 7) is **reserved, always 0** from the rover. `hw.camera` is owned by
+   the ground station (HTTP probe of `camera_url`). wire.py never creates `hw.camera`; state.py adds it.
+3. **Buzzer** — bit `HW_BUZZER` only, no model/detail. Intentional.
+4. **`model` strings** — only `env.model` and `lidar.model` come from the wire. The other `model`
+   values in the hello example (`mpu6050`, `bh1750`, `hc-sr04`, `ina219`) are fixed defaults that
+   protocol.py fills in when `present` is true; tests check `present` and wire-carried fields only.
+5. **reset_reason** — `uint8_t` from `esp_reset_reason()`, mapped in wire.py:
+   0 UNKNOWN · 1 POWERON · 2 EXT · 3 SW · 4 PANIC · 5 INT_WDT · 6 TASK_WDT · 7 WDT · 8 DEEPSLEEP ·
+   9 BROWNOUT · 10 SDIO · 11 USB · 12 JTAG · 13 EFUSE · 14 PWR_GLITCH · 15 CPU_LOCKUP;
+   anything else → `"UNKNOWN_<n>"`. Dashboard shows BROWNOUT, PANIC and any *WDT as a warning event.
+6. **Event text** — firmware writes ASCII with `snprintf(msg, 60, ...)`: silently truncated to 59 chars
+   + NUL. Python decodes up to the first NUL, `errors="replace"`.
+7. **Scan pose** — every fragment of one scan carries the **same** pose: the pose at the start of
+   the scan. Python takes it from the first fragment received. Motion during a sweep is ignored for
+   now (mapping can de-skew later).
+8. **Ack rules** — the rover sends one AckMsg (`ack_seq` = that CmdMsg's seq) when **either**
+   (a) `mode` or `cmd_flags` differ from the previous accepted CmdMsg, **or** (b) `seq % 10 == 0`
+   (≈ 1 Hz, so RTT is measured continuously). At most one ack per CmdMsg. Changes to drive or
+   servo values alone don't trigger (a).
+9. **E-STOP sending** — the GS sets `CMD_ESTOP` on the next 3 CmdMsgs, then clears the bit; the
+   latch lives on the rover. Clearing the bit does not release the latch — only `CMD_ESTOP_RESET` does.

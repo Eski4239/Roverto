@@ -26,8 +26,10 @@ enum MsgType : uint8_t {
 
 enum HwBit : uint16_t {           // HelloMsg.hw_present bit positions
   HW_IMU = 0, HW_ENV = 1, HW_LIGHT = 2, HW_SONAR = 3, HW_BATTERY = 4,
-  HW_CURRENT = 5, HW_ENCODERS = 6, HW_CAMERA = 7, HW_LIDAR = 8, HW_BUZZER = 9,
-  HW_SERVO = 10,
+  HW_CURRENT = 5, HW_ENCODERS = 6,
+  HW_CAMERA = 7,   // RESERVED: always 0 from the rover; camera presence is probed by the ground station
+  HW_LIDAR = 8, HW_BUZZER = 9,
+  HW_SERVO = 10,   // maps to JSON hw.sonar.servo
 };
 
 enum EnvModel   : uint8_t { ENV_NONE = 0, ENV_BME280 = 1, ENV_BMP280 = 2, ENV_DHT11 = 3 };
@@ -120,7 +122,7 @@ struct EventMsg {           // 72 bytes
   MsgHeader h;
   uint8_t level;            // EvLevel
   uint8_t code;             // EvCode
-  char    msg[60];          // NUL-terminated human text
+  char    msg[60];          // ASCII, NUL-terminated; snprintf truncates silently to 59 chars
 };
 
 struct AckMsg {             // 13 bytes

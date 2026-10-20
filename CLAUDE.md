@@ -15,7 +15,9 @@ Read before doing any work:
 
 ## Hard rules
 1. **Protocol first.** A field change updates, in one commit: `docs/02`, `rover_protocol.h`,
-   `ground_station/app/wire.py`, `ground_station/app/protocol.py`, `simulator/fake_rover.py`, golden tests.
+   `ground_station/app/wire.py`, `ground_station/app/protocol.py`, `simulator/fake_rover.py`, the
+   firmware drivers (`firmware/rover_main`), and the golden files (`tools/golden_gen.cpp` → `tests/golden/`).
+   `firmware/common/` and `docs/02` are shared ground: change them only via a reviewed pull request.
    Every wire message must stay ≤ 250 bytes (`static_assert`).
 2. **Hardware is optional.** Missing hardware → `NaN` on the wire → `null` in JSON → "NOT INSTALLED" or
    "—" in the UI. Never fake zeros, never crash. HELLO `hw_present` says what exists.
