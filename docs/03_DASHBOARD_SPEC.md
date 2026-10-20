@@ -52,7 +52,7 @@ and show their age ("12 s ago").
 | rssi_dbm         | > −67     | −67…−80        | < −80      |
 | sonar dist_cm    | > 50      | 20–50          | < 20       |
 | last_cmd_age_ms  | < 200     | 200–500        | > 500      |
-| chip_temp_c      | < 60      | 60–75          | > 75       |
+| chip_temp_c      | informational only — no colour alarm (sensor unreliable on classic ESP32, D-011) | | |
 
 ## 3. Controls & safety in the UI
 - **E-STOP**: always visible, also bound to `Space`. Sends `estop:true` immediately (3 times, 50 ms

@@ -132,7 +132,7 @@ Non-blocking loop (`millis()`-based, no `delay()`):
 - 1 Hz `BridgeStatus`. Onboard LED (GPIO2) blinks on RX. Never invents commands.
 
 ## 6. Power notes that affect software
-- Battery 3S Li-ion 9.0–12.6 V → divider 100 kΩ / 33 kΩ → ≤ 3.13 V on **GPIO34 (ADC1)**.
+- Battery 3S Li-ion 9.0–12.6 V → divider 100 kΩ / 22 kΩ → 1.62–2.27 V on **GPIO34 (ADC1)**, inside the accurate ADC range (D-002).
   (ADC2 pins are unusable while the radio is on.) Calibrate against a multimeter at 2–3 points.
 - SoC from a Li-ion lookup table, low-pass filtered.
 - Radio TX + motor start can brown out the ESP32 → `reset_reason` in HELLO; dashboard flags brownouts.

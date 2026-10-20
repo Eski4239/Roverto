@@ -54,20 +54,20 @@ rover_main plan (each step is flashed and tested on its own before the next):
 
 | ID | Decision | Status | GS impact |
 |----|----------|--------|-----------|
-| D-001 | **Toolchain:** official `platformio/platform-espressif32` does not ship arduino-esp32 3.x; use the community **pioarduino** platform (`platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip`). Pin the exact release in `platformio.ini` once it builds, so both boards use the same core. Same applies to `ground_bridge`. | PROPOSED | bridge uses same platform |
-| D-002 | **Battery divider 100k/33k → 100k/22k.** With 100k/33k, 12.6 V gives 3.13 V on GPIO34, above the ESP32 ADC's accurate range at 12 dB attenuation (~150–2450 mV) and at saturation. 100k/22k gives 2.27 V @ 12.6 V and 1.62 V @ 9.0 V. Multiplier becomes 122/22. docs/01 §6 and docs/04 §B to be updated. | PROPOSED | none (value on the wire unchanged) |
+| D-001 | **Toolchain:** official `platformio/platform-espressif32` does not ship arduino-esp32 3.x; use the community **pioarduino** platform (`platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip`). Pin the exact release in `platformio.ini` once it builds, so both boards use the same core. Same applies to `ground_bridge`. | **AGREED** 2026-10-20 | bridge uses same platform |
+| D-002 | **Battery divider 100k/33k → 100k/22k.** With 100k/33k, 12.6 V gives 3.13 V on GPIO34, above the ESP32 ADC's accurate range at 12 dB attenuation (~150–2450 mV) and at saturation. 100k/22k gives 2.27 V @ 12.6 V and 1.62 V @ 9.0 V. Multiplier becomes 122/22. docs/01 §6 and docs/04 §B to be updated. | **AGREED** 2026-10-20 | none (value on the wire unchanged) |
 | D-003 | **Single `seq` counter** for *all* rover→GS messages (HELLO, TELEM, each SCAN fragment, EVENT, ACK), as docs/02 §1 says "per sender". Loss % on the GS is computed over all message types. | AGREED — already done this way in `simulator/fake_rover.py` and `state.py` `LinkTracker` (tolerates reordering) | none |
-| D-004 | **`mot.pwm_l/pwm_r` = PWM actually applied** after clamp, ramp, safety cut-offs and PWM_MAX (not the raw `drive` × 255). So after E-STOP/WD/TILT the GS sees 0 even if it is still sending drive. | PROPOSED | ⚠ UI "cmd vs rpm" bars show applied PWM |
-| D-005 | **HC-SR04 never blocks the loop:** no `pulseIn()`. TRIG pulse, then ECHO edges timed in a GPIO interrupt with `micros()`; timeout 25 ms → `dist_cm = NaN` / `0xFFFF`. | PROPOSED | none |
-| D-006 | **Bench drive over USB serial** behind build flag `BENCH_SERIAL_CMD` (off by default): console command `drive <l> <r>` feeds the same CmdMsg path and the same 500 ms watchdog. For R2 before the radio link exists. Never enabled in the competition build. | PROPOSED | none |
-| D-007 | **PWM ramp** (slew limit, e.g. ≤ 10 PWM steps per 10 ms) on both motors to reduce brownouts when motors start while the radio transmits. E-STOP / WD / TILT cut to 0 *immediately*, no ramp down. | PROPOSED | none |
-| D-008 | **MPU-6050 own I2C code** (not the Adafruit lib): accept WHO_AM_I 0x68 and common clone IDs, so clone boards don't show "NOT INSTALLED". Gyro bias averaged for ~1 s at boot → the rover must be still at power-on. | PROPOSED | none |
-| D-009 | **Env detection:** read register 0xD0 at 0x76/0x77 first; 0x60 → Adafruit_BME280, 0x58 → Adafruit_BMP280 (`hum_pct = NaN`), nothing → try DHT11 (`press_hpa = alt_m = NaN`). | PROPOSED | none (already in docs/02 §2.1) |
-| D-010 | **CmdMsg validation** before it counts as "valid" for the watchdog: source MAC == `PEER_MAC`, len == 30, magic/ver/type OK, `drive_l/r` finite, mode ≤ 3. Otherwise ignored + CMD_REJECTED (max 1 event/s). | PROPOSED | none |
-| D-011 | `chip_temp_c` from `temperatureRead()` is unreliable on many classic ESP32s (often a constant). Sent as-is; GS should treat it as indicative only. | PROPOSED | ⚠ don't alarm hard on it |
-| D-012 | **Simulator parity for CmdMsg handling** (mirror `fake_rover.py` `apply_cmd`): ack rule (a) is not evaluated on the first CmdMsg after boot (no previous to compare); if one CmdMsg carries both `estop` and `estop_reset`, reset wins (latch released); servo and mode are applied even while E-STOP is latched, drive is not. | PROPOSED | none (matches sim) |
-| D-013 | **Motors provisional: Arduino-kit TT gear motors (3–6 V).** `PWM_MAX` is a constant in `config.h`; until the TB6612 VM supply is confirmed, default **PWM_MAX = 120** (≈6 V average from a 12.6 V battery). `drive = ±1.0` maps to ±PWM_MAX. Re-tune when the final motors are chosen. | PROPOSED | ⚠ `pwm_l/r` on the wire peak at ±PWM_MAX, not ±255 |
-| D-014 | **Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1). | PROPOSED | see GS-1 |
+| D-004 | **`mot.pwm_l/pwm_r` = PWM actually applied** after clamp, ramp, safety cut-offs and PWM_MAX (not the raw `drive` × 255). So after E-STOP/WD/TILT the GS sees 0 even if it is still sending drive. | **AGREED** 2026-10-20 | ⚠ UI "cmd vs rpm" bars show applied PWM |
+| D-005 | **HC-SR04 never blocks the loop:** no `pulseIn()`. TRIG pulse, then ECHO edges timed in a GPIO interrupt with `micros()`; timeout 25 ms → `dist_cm = NaN` / `0xFFFF`. | **AGREED** 2026-10-20 | none |
+| D-006 | **Bench drive over USB serial** behind build flag `BENCH_SERIAL_CMD` (off by default): console command `drive <l> <r>` feeds the same CmdMsg path and the same 500 ms watchdog. For R2 before the radio link exists. Never enabled in the competition build. | **AGREED** 2026-10-20 | none |
+| D-007 | **PWM ramp** (slew limit, e.g. ≤ 10 PWM steps per 10 ms) on both motors to reduce brownouts when motors start while the radio transmits. E-STOP / WD / TILT cut to 0 *immediately*, no ramp down. | **AGREED** 2026-10-20 | none |
+| D-008 | **MPU-6050 own I2C code** (not the Adafruit lib): accept WHO_AM_I 0x68 and common clone IDs, so clone boards don't show "NOT INSTALLED". Gyro bias averaged for ~1 s at boot → the rover must be still at power-on. | **AGREED** 2026-10-20 | none |
+| D-009 | **Env detection:** read register 0xD0 at 0x76/0x77 first; 0x60 → Adafruit_BME280, 0x58 → Adafruit_BMP280 (`hum_pct = NaN`), nothing → try DHT11 (`press_hpa = alt_m = NaN`). | **AGREED** 2026-10-20 | none (already in docs/02 §2.1) |
+| D-010 | **CmdMsg validation** before it counts as "valid" for the watchdog: source MAC == `PEER_MAC`, len == 30, magic/ver/type OK, `drive_l/r` finite, mode ≤ 3. Otherwise ignored + CMD_REJECTED (max 1 event/s). | **AGREED** 2026-10-20 | none |
+| D-011 | `chip_temp_c` from `temperatureRead()` is unreliable on many classic ESP32s (often a constant). Sent as-is; GS should treat it as indicative only. | **AGREED** 2026-10-20 | ⚠ don't alarm hard on it |
+| D-012 | **Simulator parity for CmdMsg handling** (mirror `fake_rover.py` `apply_cmd`): ack rule (a) is not evaluated on the first CmdMsg after boot (no previous to compare); if one CmdMsg carries both `estop` and `estop_reset`, reset wins (latch released); servo and mode are applied even while E-STOP is latched, drive is not. | **AGREED** 2026-10-20 | none (matches sim) |
+| D-013 | **Motors provisional: Arduino-kit TT gear motors (3–6 V).** `PWM_MAX` is a constant in `config.h`; until the TB6612 VM supply is confirmed, default **PWM_MAX = 120** (≈6 V average from a 12.6 V battery). `drive = ±1.0` maps to ±PWM_MAX. Re-tune when the final motors are chosen. | **AGREED** 2026-10-20 | ⚠ `pwm_l/r` on the wire peak at ±PWM_MAX, not ±255 |
+| D-014 | **Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1). | **AGREED** 2026-10-20 | see GS-1 |
 | D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | **AGREED** 2026-10-20 (GS: Pablo) — details in GS-2 | ⚠ GS detects a reboot by `t_ms` going backwards (GS-2) |
 
 ## 4. Open questions (answer here, then turn into decisions)
@@ -87,7 +87,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 - **Q-5 Modes:** `assisted` and `auto` have no defined behaviour. Proposal: `assisted` = manual but
   forward drive blocked while front sonar < 20 cm (OBSTACLE event); `auto` = rejected
   (AckMsg ok=0, CMD_REJECTED) until navigation exists. → needs a docs/02 PR.
-- Q-3/Q-4/Q-5 **2026-10-20:** not decided yet; provisional behaviour in D-014.
+- **Q-3/Q-4/Q-5 AGREED 2026-10-20 (GS: Pablo) as proposed:** TILT auto-resumes when |roll|,|pitch| < 30° and a zero-drive CmdMsg has been received; BATT_LOW < 10.5 V (0.2 V hysteresis, 3 s persistence, same for BATT_CRIT); `assisted` = manual with forward drive blocked while front sonar < 20 cm (OBSTACLE event); `auto` rejected (AckMsg ok=0 + CMD_REJECTED) until navigation exists. Written into docs/02 §5.
 
 ### Notes for the GS side (found while reviewing Phases 2–4)
 - **GS-1 Event spam in the simulator:** `RoverState.tick()` runs at 10 Hz and appends TILT,
@@ -119,7 +119,9 @@ rover_main plan (each step is flashed and tested on its own before the next):
 - **D-015 and GS-2 AGREED** with the detection order and refinements written under GS-2
   (t_ms primary, HELLO seq 0 secondary, seq jump fallback; request HELLO if missing).
   Also recorded in docs/02 §6.10. GS implementation is done before Phase 5.
-- Other PROPOSED items (D-001…D-014, Q-3…Q-5): GS reply follows in the next entry.
+- **GS reply: D-001…D-014 all AGREED as written; Q-3, Q-4, Q-5 AGREED as proposed** (docs/02 §5,
+  docs/01 §6, docs/04 §B, docs/03 thresholds updated). GS still to implement: GS-1, GS-2,
+  D-004/D-013 PWM scaling, D-011 chip temp, assisted/auto in the simulator.
 
 ### 2026-10-20 (2) — answers + review of GS Phases 2–4
 - Q-1 answered: Eski4239 owns `ground_bridge`.
