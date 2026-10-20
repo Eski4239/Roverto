@@ -68,6 +68,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | D-012 | **Simulator parity for CmdMsg handling** (mirror `fake_rover.py` `apply_cmd`): ack rule (a) is not evaluated on the first CmdMsg after boot (no previous to compare); if one CmdMsg carries both `estop` and `estop_reset`, reset wins (latch released); servo and mode are applied even while E-STOP is latched, drive is not. | PROPOSED | none (matches sim) |
 | D-013 | **Motors provisional: Arduino-kit TT gear motors (3–6 V).** `PWM_MAX` is a constant in `config.h`; until the TB6612 VM supply is confirmed, default **PWM_MAX = 120** (≈6 V average from a 12.6 V battery). `drive = ±1.0` maps to ±PWM_MAX. Re-tune when the final motors are chosen. | PROPOSED | ⚠ `pwm_l/r` on the wire peak at ±PWM_MAX, not ±255 |
 | D-014 | **Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1). | PROPOSED | see GS-1 |
+| D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | PROPOSED | ⚠ GS can use `t_ms` going backwards to detect a reboot (GS-2) |
 
 ## 4. Open questions (answer here, then turn into decisions)
 
@@ -93,6 +94,11 @@ rover_main plan (each step is flashed and tested on its own before the next):
   BATT_CRIT and BATT_LOW events on *every* tick while the condition holds (≈10 events/s, each
   using a seq). rover_main will emit them once per state change (plus WD_STOP already works that
   way in the sim). Suggest the sim does the same, so event log and loss % look like the real rover.
+- **GS-2 Early rover reboots aren't detected:** `state.py` resets loss tracking on a backward seq jump
+  ≥ `RESTART_BACKWARD_JUMP` (1000). The rover sends ≈12 msgs/s, so a reboot in the first ~80 s of
+  uptime (typical: brownout at the first motor start) jumps back < 1000 and is missed → wrong loss %
+  for 10 s. Suggest also resetting when a HELLO / TELEM header `t_ms` goes backwards vs the last one
+  received (rover `millis()` restarts at 0 on every boot; it only wraps after 49 days). See D-015.
 
 ## 5. Session log (newest first)
 
@@ -102,6 +108,8 @@ rover_main plan (each step is flashed and tested on its own before the next):
 - Reviewed `simulator/fake_rover.py`, `state.py`, `link.py`: D-003 confirmed (single seq, GS loss
   calc already handles it). Recorded sim behaviour the firmware will mirror (D-012, D-014) and one
   suggestion for the sim (GS-1).
+- After rebase on `431c7bd` (Phase 4 fixes): GS now detects a rover reboot by a backward seq jump
+  ≥ 1000. Added GS-2 (early reboots) + D-015.
 
 ### 2026-10-20 — kickoff (Victor + Claude)
 - Read the whole repo (CLAUDE.md, docs/01–06, TEAM_BRIEF, rover_protocol.h, wire.py, protocol.py,
