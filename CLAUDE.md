@@ -30,6 +30,10 @@ Read before doing any work:
 6. **Mapping/navigation is on the back burner.** Keep the map panel and SCAN message; no SLAM until asked.
 7. Must run on Windows, macOS, Linux. `pathlib`, no absolute paths. The laptop may be offline →
    vendor all frontend libraries locally.
+8. **Dependency reminder.** Whenever you add, remove or change anything in
+   `ground_station/requirements.txt`, end your reply with a clearly visible line:
+   "⚠ requirements.txt changed — everyone must run `pip install -r ground_station/requirements.txt`
+   after pulling." Run that install yourself in the .venv before running tests.
 
 ## Stack
 - Ground station: Python 3.12, FastAPI + uvicorn, pydantic v2, pyserial, cobs, numpy, pytest.

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs after every `git pull` / merge. Warns when Python dependencies changed.
+if git diff --name-only ORIG_HEAD HEAD 2>/dev/null | grep -q "^ground_station/requirements.txt$"; then
+  echo ""
+  echo "=================================================================="
+  echo "  ground_station/requirements.txt CHANGED - run this now:"
+  echo "    pip install -r ground_station/requirements.txt"
+  echo "  (with the .venv active)"
+  echo "=================================================================="
+  echo ""
+fi
+exit 0

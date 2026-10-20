@@ -66,6 +66,13 @@ pip install -r ground_station/requirements.txt
 ```
 In VS Code: `Ctrl+Shift+P → Python: Select Interpreter → .venv`.
 
+## Step 5b — Turn on the repo's Git reminders (once per clone)
+```powershell
+git config core.hooksPath tools/hooks
+```
+After this, `git pull` prints a warning whenever `ground_station/requirements.txt` changed, telling
+you to run `pip install -r ground_station/requirements.txt`.
+
 ## Step 6 — Work loop (per prompt in 06_CLAUDE_CODE_PROMPTS.md)
 1. New Claude Code conversation per phase (keeps context focused).
 2. Paste the prompt → review the plan → approve.

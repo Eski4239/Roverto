@@ -86,6 +86,10 @@ Read before doing any work:
 6. **Mapping/navigation is on the back burner.** Keep the map panel and SCAN message; no SLAM until asked.
 7. Must run on Windows, macOS, Linux. `pathlib`, no absolute paths. The laptop may be offline →
    vendor all frontend libraries locally.
+8. **Dependency reminder.** Whenever you add, remove or change anything in
+   `ground_station/requirements.txt`, end your reply with a clearly visible line:
+   "⚠ requirements.txt changed — everyone must run `pip install -r ground_station/requirements.txt`
+   after pulling." Run that install yourself in the .venv before running tests.
 
 ### Stack
 - Ground station: Python 3.12, FastAPI + uvicorn, pydantic v2, pyserial, cobs, numpy, pytest.
@@ -901,6 +905,13 @@ py -3.12 -m venv .venv
 pip install -r ground_station/requirements.txt
 ```
 In VS Code: `Ctrl+Shift+P → Python: Select Interpreter → .venv`.
+
+### Step 5b — Turn on the repo's Git reminders (once per clone)
+```powershell
+git config core.hooksPath tools/hooks
+```
+After this, `git pull` prints a warning whenever `ground_station/requirements.txt` changed, telling
+you to run `pip install -r ground_station/requirements.txt`.
 
 ### Step 6 — Work loop (per prompt in 06_CLAUDE_CODE_PROMPTS.md)
 1. New Claude Code conversation per phase (keeps context focused).

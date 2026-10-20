@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs after switching branches. $1 = old HEAD, $2 = new HEAD, $3 = 1 for branch checkout.
+[ "$3" = "1" ] || exit 0
+if git diff --name-only "$1" "$2" 2>/dev/null | grep -q "^ground_station/requirements.txt$"; then
+  echo ""
+  echo "  requirements.txt differs on this branch - run:"
+  echo "    pip install -r ground_station/requirements.txt"
+  echo ""
+fi
+exit 0
