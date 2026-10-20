@@ -3,6 +3,7 @@ import { renderField, ageText, thresholdClass } from "./hwstate.js";
 const THRESHOLDS = {
   vbat_v: { greenAbove: 11.1, redBelow: 10.5 },
   rssi_dbm: { greenAbove: -67, redBelow: -80 },
+  loss_pct: { greenBelow: 2, redAbove: 10 },
 };
 
 export class TopBar {
@@ -23,7 +24,7 @@ export class TopBar {
     this._text("tb-rssi-up", this._fmtRssi(link.rssi_rover_dbm));
     this._text("tb-rssi-down", this._fmtRssi(link.rssi_bridge_dbm));
     this._text("tb-rtt", link.rtt_ms != null ? `${Math.round(link.rtt_ms)} ms` : "—");
-    this._text("tb-loss", `${link.loss_pct != null ? link.loss_pct.toFixed(1) : "0.0"} %`);
+    this._lossText("tb-loss", link.loss_pct);
 
     if (telem && this.missionStartWallMs === null) {
       this.missionStartWallMs = nowWallMs;
@@ -107,5 +108,12 @@ export class TopBar {
   _text(id, text) {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
+  }
+
+  _lossText(id, lossPct) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = `${lossPct != null ? lossPct.toFixed(1) : "0.0"} %`;
+    el.className = thresholdClass(lossPct, THRESHOLDS.loss_pct);
   }
 }

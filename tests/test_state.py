@@ -29,9 +29,9 @@ def test_loss_pct_no_gaps():
 
 def test_loss_pct_with_gap():
     tracker = LinkTracker()
-    tracker.on_rover_seq(0)
+    tracker.on_rover_seq(0, recv_wall_ms=1000.0)
     tracker.on_telem(_telem(0), recv_wall_ms=1000.0, rssi=-50)
-    tracker.on_rover_seq(5)  # 4 missing
+    tracker.on_rover_seq(5, recv_wall_ms=1001.0)  # 4 missing
     tracker.on_telem(_telem(5), recv_wall_ms=1001.0, rssi=-50)
     block = tracker.to_block(now_wall_ms=1002.0, connected=True, serial_port="COM5")
     assert block.loss_pct > 0.0
@@ -43,8 +43,44 @@ def test_loss_pct_tolerates_reordering():
     next telem) can arrive slightly out of seq order with zero real loss."""
     tracker = LinkTracker()
     for seq in [10, 12, 11, 14, 13, 16, 15]:
-        tracker.on_rover_seq(seq)
+        tracker.on_rover_seq(seq, recv_wall_ms=1000.0)
     block = tracker.to_block(now_wall_ms=1000.0, connected=True, serial_port="COM5")
+    assert block.loss_pct == 0.0
+
+
+def test_loss_pct_resets_on_rover_restart():
+    """Bug repro: rover reboots, seq restarts from 0. A backwards jump this
+    large must be recognised as a restart (not ~60k lost frames) and the
+    loss window must recover to ~0 well within LOSS_WINDOW_MS."""
+    tracker = LinkTracker()
+    tracker.on_rover_seq(30000, recv_wall_ms=1000.0)
+    tracker.on_rover_seq(0, recv_wall_ms=1001.0)  # rover restart
+    for i, seq in enumerate(range(1, 10)):
+        tracker.on_rover_seq(seq, recv_wall_ms=1002.0 + i)
+    block = tracker.to_block(now_wall_ms=1011.0, connected=True, serial_port="COM5")
+    assert block.loss_pct < 5.0
+
+
+def test_seq_wrap_65535_to_0_counts_as_no_loss():
+    tracker = LinkTracker()
+    tracker.on_rover_seq(65533, recv_wall_ms=1000.0)
+    tracker.on_rover_seq(65534, recv_wall_ms=1001.0)
+    tracker.on_rover_seq(65535, recv_wall_ms=1002.0)
+    tracker.on_rover_seq(0, recv_wall_ms=1003.0)
+    tracker.on_rover_seq(1, recv_wall_ms=1004.0)
+    block = tracker.to_block(now_wall_ms=1005.0, connected=True, serial_port="COM5")
+    assert block.loss_pct == 0.0
+
+
+def test_loss_pct_windowed_to_10s():
+    """An old gap must age out of the 10 s window rather than depress
+    loss_pct for the rest of the session."""
+    tracker = LinkTracker()
+    tracker.on_rover_seq(0, recv_wall_ms=0.0)
+    tracker.on_rover_seq(100, recv_wall_ms=1.0)  # big gap, long ago
+    for i, seq in enumerate(range(200, 210)):
+        tracker.on_rover_seq(seq, recv_wall_ms=20_000.0 + i)
+    block = tracker.to_block(now_wall_ms=20_010.0, connected=True, serial_port="COM5")
     assert block.loss_pct == 0.0
 
 

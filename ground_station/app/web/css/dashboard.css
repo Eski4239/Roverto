@@ -90,21 +90,44 @@ html, body {
 }
 .rec-dot.active { background: var(--red); }
 
+/* Normal (not active): outlined red button, transparent fill. */
 #estop-btn {
   margin-left: auto;
-  background: var(--red);
-  color: #fff;
-  border: none;
+  background: transparent;
+  color: var(--red);
+  border: 2px solid var(--red);
   font-weight: 700;
   padding: 0.4rem 1.1rem;
   border-radius: 3px;
   cursor: pointer;
   letter-spacing: 0.05em;
 }
+/* Active (telem.state.estop == true): solid fill, flashing. */
 #estop-btn.latched {
-  background: #7a0000;
-  box-shadow: 0 0 0 2px var(--red) inset;
+  color: #fff;
+  border-color: var(--red);
+  background: var(--red);
+  animation: estop-flash 0.7s step-start infinite;
 }
+@keyframes estop-flash {
+  50% { background: #7a0000; }
+}
+
+#estop-banner {
+  display: none;
+  position: fixed;
+  top: 0.4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--red);
+  color: #fff;
+  font-weight: 700;
+  padding: 0.3rem 1rem;
+  border-radius: 0 0 4px 4px;
+  z-index: 20;
+  animation: estop-flash 0.7s step-start infinite;
+}
+#estop-banner.visible { display: block; }
 
 .value-green { color: var(--green); }
 .value-amber { color: var(--amber); }
