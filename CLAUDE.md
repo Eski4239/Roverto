@@ -12,6 +12,8 @@ Read before doing any work:
 - `docs/03_DASHBOARD_SPEC.md` — panels, behaviour, "not installed" states
 - `docs/04_FUTURE_HARDWARE.md` — pin plan + hardware we don't have yet (software must be ready for it)
 - `docs/06_CLAUDE_CODE_PROMPTS.md` — the build sequence we follow
+- `docs/PROGRESS_ROVER_MAIN.md` — rover_main progress, design decisions (PROPOSED/AGREED) and open
+  questions; check its "GS impact" items before changing anything that talks to the rover
 
 ## Hard rules
 1. **Protocol first.** A field change updates, in one commit: `docs/02`, `rover_protocol.h`,
