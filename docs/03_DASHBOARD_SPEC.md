@@ -7,7 +7,7 @@ dim demo room), works at 1366×768 laptop resolution, no internet required.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│ TOP BAR: ● LINK OK  RSSI −61 dBm  RTT 23 ms  loss 0.4 %  T+00:05:40  MODE manual │
+│ TOP BAR: ● LINK OK  COM5  RSSI ↑−61 ↓−58 dBm  RTT 23 ms  loss 0.4 %  T+00:05:40 │
 │          vbat 11.4 V ▮▮▮▮▯ 71 %                     [● REC]        [  E-STOP  ]  │
 ├───────────────────────────────┬──────────────────────────────────────────────────┤
 │ VIDEO                         │ MAP  (stub now: polar plot of latest scan)       │
@@ -30,8 +30,8 @@ dim demo room), works at 1366×768 laptop resolution, no internet required.
 
 | Panel        | Data                        | Update | Notes |
 |--------------|-----------------------------|--------|-------|
-| Top bar      | `sys`, link stats, `pwr`, `state` | 10 Hz | Link state: OK (<300 ms since last telem) / STALE (300 ms–2 s) / LOST (>2 s). Loss % from `seq` gaps. RTT from cmd→ack. |
-| Video        | MJPEG via backend proxy `/video` | stream | Overlay: heading, sonar distance, "STALE" if no frame for 1 s |
+| Top bar      | `link` (docs/02 §3.2), `sys`, `pwr`, `state` | 10 Hz | Link state: OK / STALE / LOST / NO_BRIDGE (USB bridge unplugged → show "Plug in ground bridge" and a serial-port picker). RSSI both directions: rover's view of our commands (↑) and bridge's view of the rover (↓). Loss % from `seq` gaps, RTT from cmd→ack, bridge TX failures. |
+| Video        | MJPEG via backend proxy `/video` from `camera_url` (ESP32-CAM AP) | stream | Overlay: heading, sonar distance, "STALE" if no frame for 1 s. If the laptop isn't on the ROVER-CAM WiFi, say so. |
 | Map          | `scan`                       | per scan | Phase 1: polar plot of the last sweep. Mapping later. |
 | Environment  | `env`, `light`               | 1 Hz shown | Value + unit + sparkline (last 5 min) + min/max of session |
 | Rover health | `mot`, `imu`, `sonar`, `pwr`, `sys` | 10 Hz | Colour thresholds below |

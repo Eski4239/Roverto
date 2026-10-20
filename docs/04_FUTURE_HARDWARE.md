@@ -10,6 +10,7 @@ Prices are rough estimates (Oct 2026), check before buying.
 |---|------------------------------|---------------|---------------------------|-----------|
 | A | BME280 temp/hum/pressure     | **NOW**       | `env.*`                   | €5–10     |
 | B | Battery voltage divider      | **NOW** (resistors on hand) | `pwr.vbat_v`, `pwr.soc_pct` | €0 |
+| — | ESP32 #2 as ground_bridge (USB, ESP-NOW) | **NOW** (board on hand) | all | €0 |
 | C | ESP32-CAM + USB programmer (ESP32-CAM-MB) | FUTURE | `hw.camera`, `/video` | €10–15 |
 | D | Wheel encoders               | FUTURE        | `mot.rpm_*`, `odom.*`     | €5–15     |
 | E | INA219 current sensor        | FUTURE        | `pwr.ibat_a`, `pwr.p_w`   | €3–6      |
@@ -52,9 +53,11 @@ Reserve these now so future hardware never forces a rewire. Verify against your 
 ### C. ESP32-CAM (future)
 1. Buy ESP32-CAM (AI-Thinker, OV2640) **with the ESP32-CAM-MB USB board** (no USB on the CAM itself).
 2. Power from its own 5 V regulator (item G) — it browns out on WiFi peaks if it shares a weak rail.
-3. Firmware `firmware/rover_cam/`: join `ROVER-AP`, static IP 192.168.4.2, serve `/stream` (MJPEG,
-   QVGA 320×240, quality ~12) and `/status`.
-4. Set `hw.camera.present=true` in `rover_main` config (or let the ground station probe `/status`).
+3. Firmware `firmware/rover_cam/`: create WiFi AP `ROVER-CAM` on **channel 1** (ESP-NOW uses 11),
+   IP 192.168.4.1, serve `/stream` (MJPEG, QVGA 320×240, quality ~12) and `/status`.
+4. The laptop joins `ROVER-CAM` for video (it loses internet meanwhile; telemetry is unaffected
+   because it goes over the USB bridge). The ground station probes `camera_url/status` to set
+   `hw.camera.present`.
 5. Ground station: `video.py` proxies the stream to `/video`, measures fps, flags STALE.
 6. ✔ Test: ≥10 fps at 3 m from the laptop; latency < 300 ms (film a stopwatch).
 7. Later: camera calibration (checkerboard) → needed if vision is used for mapping/landmarks.
@@ -64,7 +67,7 @@ Option 1 (cheap, keeps TT motors): LM393 slotted optical sensor + 20-slot disc p
 Option 2 (better): TT/N20/JGA25 motors with built-in Hall encoders (more counts, direction-aware).
 1. Mount, wire signal → GPIO36/39, 3.3 V supply.
 2. Firmware: interrupt counter with debounce (ignore pulses < 1 ms apart), RPM over a 100 ms window.
-   Optical sensors don't know direction → take sign from the commanded `dir_l/dir_r`.
+   Optical sensors don't know direction → take sign from the commanded `pwm_l/pwm_r`.
 3. `odom`: differential-drive equations using wheel radius + track width (measure them, put in config),
    heading from IMU yaw fused with encoder difference.
 4. Unlocks: closed-loop speed (PID per wheel) so the rover drives straight.
@@ -83,9 +86,10 @@ packet format, Arduino libraries exist. Alternative: RPLIDAR C1 (UART 460800).
 1. Mount on top, clear 360° view, centre aligned with rover rotation axis if possible. Note the
    orientation offset in config.
 2. Power from the 5 V rail of item G (motor inside the lidar draws ~180 mA).
-3. Firmware: UART2 RX on GPIO16, parse packets (CRC check), bin into 1° buckets → one `scan`
-   message per revolution with `src:"lidar"`. Option: move lidar parsing to the spare ESP32 #2 if
-   `rover_main` loop rate drops below 80 Hz.
+3. Firmware: UART2 RX on GPIO16, parse packets (CRC check), bin into 1° buckets → send each
+   revolution as 4 SCAN fragments (`src = SCAN_LIDAR`). ESP32 #2 is now the ground bridge, so if
+   `rover_main` loop rate drops below 80 Hz, run lidar parsing as a FreeRTOS task on core 0 or add a
+   third ESP32.
 4. Ground station: map panel already draws `scan` as a polar plot → works on day one.
 5. Mapping phase (when we decide): occupancy grid from scans + `odom` pose; consider BreezySLAM or
    a simple ICP scan-matcher in Python; A* on the grid → `cmd.goto` waypoints.

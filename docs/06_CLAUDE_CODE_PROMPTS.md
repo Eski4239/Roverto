@@ -1,56 +1,62 @@
-# 06 — Claude Code Prompt Sequence
+# 06 — Claude Prompt Sequence
 
-Use one prompt per phase, in order, each in a **new conversation** started in plan mode (`/plan`).
-Every prompt ends with an acceptance check — run it yourself before committing.
-Copy the text inside the boxes as-is.
+Works in **Claude Code** (VS Code, repo open — it reads CLAUDE.md automatically) and in **Claude chat**
+(Pro) inside a Claude Project that has `docs/TEAM_BRIEF.md` as knowledge. In chat, Claude can't run
+anything: ask for complete files, paste them into the repo, run the checks yourself, paste errors back.
+
+One prompt per phase, each in a **new conversation**. In Claude Code start with `/plan`.
+Every prompt ends with a check — run it before committing.
+
+## Two parallel tracks
+- **Track A – Python ground station:** Phases 1–9 (works fully with the simulator, no hardware).
+- **Track B – Firmware:** Phases 10–11. Can start as soon as Phase 1 is merged (the wire protocol is
+  then frozen and golden-tested on the Python side).
 
 ---
 
 ## Phase 0 — Orientation (no code)
 ```
-Read @CLAUDE.md and every file in @docs/. Do not write any code yet.
+Read CLAUDE.md, every file in docs/ and firmware/common/rover_protocol.h. Do not write code yet.
 1. Summarise the system in 10 bullet points so I can check you understood it.
-2. List any contradictions or gaps you find between the docs.
+2. List contradictions or gaps between the docs.
 3. List the questions you need answered before Phase 1.
 ```
-✔ Check: the summary matches the docs; fix any gaps in the docs before moving on.
+✔ Check: summary matches the docs; fix gaps in the docs first.
 
 ---
 
-## Phase 1 — Scaffold + protocol models
+## Phase 1 — Scaffold + protocol + wire codec   (Track A, unblocks Track B)
 ```
-Create the repository layout from docs/01_ARCHITECTURE.md section 3 (empty modules with docstrings
-are fine except where stated). Add .gitignore (.venv, logs/, __pycache__, secrets.h), README.md
-with run instructions, and ground_station/requirements.txt.
+Create the repository layout from docs/01 §4 (empty modules with docstrings are fine unless stated),
+.gitignore (.venv, logs/, __pycache__, **/secrets.h, .pio/), README run instructions, and
+ground_station/requirements.txt (fastapi, uvicorn, pydantic>=2, pyserial, cobs, numpy, pytest).
 
-Implement ground_station/app/protocol.py: pydantic v2 models for every message in
-docs/02_TELEMETRY_PROTOCOL.md (hello, telem, scan, event, cmd, ack), with:
-- all hardware-dependent fields Optional (None allowed),
-- unknown fields ignored,
-- a parse_message(raw: str) function that returns the right model or raises a clear error.
-
-Write tests/test_protocol.py using the exact JSON examples from docs/02, plus: a telem with
-missing blocks, a telem with extra unknown fields, a BMP280 hello (hum null), invalid JSON.
-Set up the .venv and run pytest.
+1. protocol.py: pydantic v2 models for the logical messages in docs/02 §2–3 (hello, telem, scan,
+   event, ack, cmd) — hardware-dependent fields Optional, unknown fields ignored.
+2. wire.py: encode/decode between the binary structs in firmware/common/rover_protocol.h and those
+   models, using the struct formats in docs/02 §4 (assert sizes). NaN <-> None, 0xFFFF <-> None,
+   hw_present bitmask <-> hello.hw, enums <-> strings. Scan fragment reassembly by scan_id with a
+   300 ms timeout. Serial framing: COBS + CRC-16/CCITT-FALSE exactly as docs/02 §4.
+3. tests: round-trip every message type; the JSON examples from docs/02 must survive
+   model -> bytes -> model; corrupted CRC and bad magic are rejected without exceptions escaping;
+   lidar scan in 4 fragments reassembles; a missing fragment yields nulls.
+Set up .venv and run pytest.
 ```
-✔ Check: `pytest -q` passes.
+✔ Check: `pytest -q` green.
 
 ---
 
 ## Phase 2 — Fake rover simulator
 ```
-Implement simulator/fake_rover.py: a WebSocket server on 127.0.0.1:8765 that behaves like the
-real rover per docs/02:
-- sends hello on connect and every 5 s, telem at 10 Hz, a sonar scan every 2 s, events when
-  thresholds are crossed;
-- realistic signals: battery slowly drains 12.6 -> 9.8 V, temperature drifts, lux changes,
-  IMU noise, sonar distances from a simple fake room;
-- obeys cmd: drive changes pwm, estop latches, estop_reset clears, and the 500 ms watchdog
-  stops the motors and emits WD_STOP;
-- CLI flags to toggle each hardware item: --bme280/--bmp280/--dht11, --encoders, --ina219,
-  --camera, --lidar (lidar sends 360-point scans at 10 Hz), --lossy 5 (drop 5 % of packets).
-Use the models from protocol.py so the simulator can never drift from the protocol.
-Add tests that start the simulator, connect, and verify hello + telem arrive and the watchdog fires.
+Implement simulator/fake_rover.py: a TCP server on 127.0.0.1:8765 that emits EXACTLY the serial
+byte stream the ground_bridge would (docs/02 §4: SK_RX_FROM_ROVER frames with a fake RSSI, plus
+SK_BRIDGE_STATUS at 1 Hz) and accepts SK_TX_TO_ROVER frames carrying CmdMsg. Use wire.py.
+Behaviour like the real rover (docs/02): HELLO on start/every 5 s/on request, TELEM 10 Hz, sonar
+SCAN every 2 s, EVENTs on thresholds; battery drains 12.6 -> 9.8 V, temperature drifts, IMU noise,
+sonar distances from a simple fake room. Obeys CmdMsg incl. estop latch/reset and the 500 ms watchdog.
+Flags: --bme280/--bmp280/--dht11, --encoders, --ina219, --lidar (4-fragment 360-pt scans at 10 Hz),
+--lossy N (drop N % of frames), --rssi -70.
+Tests: connect, receive HELLO + TELEM, watchdog fires when CmdMsg stops.
 ```
 ✔ Check: `python simulator/fake_rover.py --encoders --lidar` runs; tests pass.
 
@@ -58,176 +64,180 @@ Add tests that start the simulator, connect, and verify hello + telem arrive and
 
 ## Phase 3 — Backend core
 ```
-Implement the ground station backend:
-- rover_link.py: async WebSocket client to --rover URL, auto-reconnect with backoff, sends cmd
-  at 10 Hz as heartbeat, tracks link state OK/STALE/LOST, packet loss from seq gaps, RTT from acks.
-- state.py: latest hello (capabilities), latest telem, ring-buffer history (5 min) per numeric field.
-- logger.py: per-session folder logs/<YYYYMMDD_HHMMSS>/ with raw.jsonl (both directions + receive
-  time) and telem.csv / events.csv.
-- main.py + __main__.py: FastAPI app, `python -m ground_station.app --rover ws://127.0.0.1:8765`,
-  serves web/ at http://localhost:8000, and /ws/ui that pushes a combined state snapshot at 10 Hz
-  and accepts UI commands (drive, mode, servo, estop, estop_reset).
-Thresholds go in ground_station/app/config.toml (values from docs/03 section 2).
-Add tests with the simulator for reconnect and logging.
+Implement:
+- link.py: pyserial serial_for_url(--link) so "COM5", "/dev/ttyUSB0" and "socket://127.0.0.1:8765"
+  all work; reader thread -> asyncio queue; COBS frame splitting; auto-reopen if the port disappears
+  (state NO_BRIDGE); sends CmdMsg at 10 Hz (the heartbeat) via SK_TX_TO_ROVER.
+  `--link auto` picks the first USB serial port that sends valid BRIDGE_STATUS frames.
+- state.py: latest hello, telem, scan; link block from docs/02 §3.2 (OK/STALE/LOST/NO_BRIDGE,
+  rx_hz, loss % from seq gaps, RTT from acks, both RSSIs, bridge tx_fail); 5-min ring buffers.
+- logger.py: logs/<YYYYMMDD_HHMMSS>/ raw.jsonl (decoded logical messages both directions + laptop
+  time), raw.bin (raw serial bytes), telem.csv, events.csv.
+- main.py/__main__.py: `python -m ground_station.app --link ...`, serve web/ at
+  http://localhost:8000, /ws/ui pushes a combined snapshot at 10 Hz, accepts UI commands.
+- config.toml: thresholds from docs/03 §2, camera_url, serial baud 921600.
+Tests with the simulator: reconnect after the simulator restarts; logs are written.
 ```
-✔ Check: start simulator + backend; kill the simulator → backend shows LOST, restart → reconnects.
+✔ Check: kill the simulator → LOST; restart → OK again without restarting the backend.
 
 ---
 
 ## Phase 4 — Dashboard layout + top bar
 ```
-Build the frontend in ground_station/app/web/ (plain HTML/CSS/JS, no build step, no CDN — vendor any
-library into web/vendor/). Implement the full grid layout from docs/03 section 1 with placeholder
-cards, plus a fully working TOP BAR: link state, RSSI, RTT, loss %, mission clock, mode, battery,
-REC indicator, E-STOP button (Space key).
-Implement the hardware-absent rules from docs/03 ("NOT INSTALLED" card, "—" for null, grey + age
-when LOST) as a reusable JS helper used by every panel. Dark theme, works at 1366x768.
+Build ground_station/app/web/ (plain HTML/CSS/JS, no build step, no CDN — vendor uPlot into
+web/vendor/). Full grid from docs/03 §1 with placeholder cards and a working TOP BAR (link state,
+serial port, both RSSIs, RTT, loss, mission clock, mode, battery, REC, E-STOP on Space).
+NO_BRIDGE shows "Plug in ground bridge" + port picker. Implement the hardware-absent rules from
+docs/03 as one reusable JS helper used by every panel. Dark theme, 1366x768.
 ```
-✔ Check: run simulator with and without `--ina219`; the current widget switches between value and NOT INSTALLED.
+✔ Check: simulator with/without `--ina219` → current widget switches value ↔ NOT INSTALLED.
 
 ---
 
 ## Phase 5 — Environment + Rover health panels
 ```
-Implement the ENVIRONMENT and ROVER HEALTH panels from docs/03:
-- environment: temp, hum, press, alt, lux with value, unit, 5-min sparkline, session min/max;
-  handle BMP280 (no humidity) and DHT11 (no pressure) cases;
-- health: motor L/R commanded vs rpm bars, roll/pitch attitude indicator, yaw compass,
-  sonar distance + mini radar of the last scan, power (V, I, W, SoC trend), sys stats;
-- colour thresholds from config.toml (served by the backend, not hard-coded in JS).
-Use one vendored chart library (uPlot preferred for performance). Keep CPU low: redraw charts at
-most 2 Hz.
+Implement ENVIRONMENT and ROVER HEALTH from docs/03: env values + 5-min sparklines + session min/max
+(handle bmp280 = no humidity, dht11 = no pressure); motor cmd vs rpm bars, attitude indicator, yaw
+compass, sonar distance + mini radar, power (V, I, W, SoC trend), sys stats. Thresholds come from
+config.toml via the backend. Redraw charts at most 2 Hz.
 ```
-✔ Check: run `--bmp280` and `--dht11` variants; nothing crashes, correct fields show "—"/NOT INSTALLED.
+✔ Check: `--bmp280` and `--dht11` runs show "—"/NOT INSTALLED correctly, nothing crashes.
 
 ---
 
-## Phase 6 — Control panel + safety
+## Phase 6 — Control + safety
 ```
-Implement the CONTROL panel from docs/03 section 3: WASD/arrow driving with a speed-limit slider,
-Shift boost, mode selector, servo sweep/fixed, buzzer. Keys only act while the page is focused;
-blur/close -> backend sends zero drive. E-STOP sends estop 3x 50 ms apart; reset requires a confirm.
-Show watchdog state and last_cmd_age_ms. Write a test (simulator) proving: stop sending cmd ->
-WD_STOP within 600 ms; estop latched ignores drive until estop_reset.
+Implement CONTROL from docs/03 §3: WASD/arrows, speed limit, Shift boost, mode, servo sweep/fixed,
+buzzer. Keys act only while the page is focused; blur/close -> drive 0. E-STOP sets the estop flag
+on the next 3 CmdMsgs immediately (don't wait for the 10 Hz tick); reset needs a confirm.
+Show wd_ok and last_cmd_age_ms. Simulator tests: stop CmdMsg -> WD_STOP within 600 ms; estop
+latched ignores drive until estop_reset.
 ```
-✔ Check: drive the simulator from the browser; close the tab → motors go to 0.
+✔ Check: drive the simulator from the browser; close the tab → motors 0.
 
 ---
 
 ## Phase 7 — Recording, replay, export
 ```
-Implement replay.py and `python -m ground_station.app --replay <raw.jsonl> [--speed 2]`, feeding the
-UI exactly as a live rover would (controls disabled, "REPLAY" banner). Add an export button that
-downloads the current session's CSVs as a zip, and an EVENT LOG panel with level filter.
+replay.py + `python -m ground_station.app --replay logs/<ts>/raw.jsonl [--speed 2]` feeding the UI
+like a live rover (controls disabled, REPLAY banner). Export button (zip of the session CSVs).
+EVENT LOG panel with level filter.
 ```
-✔ Check: record 2 minutes from the simulator, replay at 2× speed, charts look identical.
+✔ Check: record 2 min, replay at 2× → identical charts.
 
 ---
 
-## Phase 8 — Video panel (works before the camera exists)
+## Phase 8 — Video panel (before the camera exists)
 ```
-Implement video.py: backend proxies an MJPEG stream (URL from hello.hw.camera.url) to /video and
-measures fps + frame age. Add a --camera mode to the simulator that serves a fake MJPEG stream
-(OpenCV-generated frames with a moving pattern and timestamp) on http://127.0.0.1:8081/stream.
-Frontend VIDEO panel: stream, overlay with heading + sonar distance + fps, STALE badge after 1 s,
-NOT INSTALLED card when camera absent.
+video.py: proxy MJPEG from config camera_url to /video, measure fps and frame age, probe
+camera_url/status every 5 s to fill hello.hw.camera. Simulator flag --camera serves a fake MJPEG
+stream (OpenCV frames, moving pattern + timestamp) on http://127.0.0.1:8081/stream.
+VIDEO panel: stream + overlay (heading, sonar distance, fps), STALE after 1 s, NOT INSTALLED card.
 ```
-✔ Check: simulator with and without `--camera`.
+✔ Check: works with and without `--camera`.
 
 ---
 
-## Phase 9 — Map panel stub (mapping stays on the back burner)
+## Phase 9 — Map panel stub
 ```
-Implement only a MAP panel stub: a polar plot of the latest `scan` (sonar or lidar), rover arrow at
-the centre, range rings every 50 cm. Create ground_station/app/mapping/__init__.py with an
-interface (class Mapper: update(scan, pose) -> None; get_grid() -> numpy array | None) and a
-NullMapper that does nothing. Do NOT implement SLAM.
+MAP panel stub only: polar plot of the latest scan (sonar or lidar), rover arrow, range rings every
+50 cm. mapping/__init__.py with class Mapper (update(scan, pose); get_grid() -> ndarray|None) and a
+NullMapper. Do NOT implement SLAM.
 ```
-✔ Check: `--lidar` shows a 360° outline of the fake room; without it, the sonar sweep shows.
+✔ Check: `--lidar` shows the fake room outline; without it the sonar sweep.
 
 ---
 
-## Phase 10 — Firmware: rover_main
+## Phase 10 — Firmware: ground_bridge   (Track B)
 ```
-Create firmware/rover_main as a PlatformIO project (board esp32doit-devkit-v1, Arduino framework,
-ArduinoJson, a WebSocket server library). Follow docs/01 section 4 (driver interface + non-blocking
-loop) and the pin table in docs/04 section 1.
-Implement drivers: mpu6050 (complementary filter), bme280 with chip-ID detection (bme/bmp) and
-dht11 fallback, bh1750, hc-sr04 + servo sweep producing scan messages, battery divider with
-calibration constants, buzzer, tb6612 motors. Stub drivers that report present=false: encoders,
-ina219, lidar. WiFi AP ROVER-AP at 192.168.4.1, WebSocket on port 81, hello/telem/scan/event exactly
-per docs/02, and all four safety rules from docs/02 section 4.
-secrets.h (gitignored) + secrets.example.h. Explain how to flash and monitor serial output.
+Create firmware/ground_bridge as a PlatformIO project (board esp32doit-devkit-v1, Arduino framework
+arduino-esp32 3.x, PacketSerial). Include ../common/rover_protocol.h (add build_flags -I).
+Follow docs/01 §2 and §5.2 and docs/02 §4 exactly:
+- WIFI_STA, not connected, esp_wifi_set_channel(ESPNOW_CHANNEL); add rover peer from secrets.h
+  (PEER_MAC, optional PMK/LMK); print own MAC at boot.
+- Serial 921600: COBS frames; SK_TX_TO_ROVER -> CRC check -> esp_now_send to the rover.
+- ESP-NOW RX callback (new esp_now_recv_info_t signature) -> copy bytes + rx_ctrl->rssi into a
+  FreeRTOS queue; loop() emits SK_RX_FROM_ROVER frames. Ignore frames from unknown MACs.
+- SK_BRIDGE_STATUS at 1 Hz; LED GPIO2 blinks on RX; SK_BRIDGE_LOG for debug text.
+- The bridge must NOT decode telemetry or generate commands.
+secrets.example.h committed, secrets.h gitignored. Explain flashing and how to find each board's MAC.
+Also write tools/bridge_echo_test.py: opens the port, checks BRIDGE_STATUS arrives and CRCs are valid.
 ```
-✔ Check: flash, join ROVER-AP, run `python -m ground_station.app --rover ws://192.168.4.1:81`; dashboard shows real data.
+✔ Check: bridge plugged in → `python tools/bridge_echo_test.py COM5` passes; dashboard shows "LOST" (not NO_BRIDGE).
 
 ---
 
-## Phase 11 — Bench integration test
+## Phase 11 — Firmware: rover_main   (Track B)
 ```
-Write docs/07_BENCH_TEST.md: a step-by-step checklist to test the real rover on a stand (wheels in
-the air): each sensor vs a reference, watchdog (turn laptop WiFi off -> motors stop), E-STOP, tilt
-cut-off, battery calibration, WiFi range test at 5/10/20 m with RSSI and loss %. Include a results
-table we can fill in for the course report.
+Create firmware/rover_main (PlatformIO, esp32doit-devkit-v1, Arduino 3.x) including
+../common/rover_protocol.h. Follow docs/01 §5.1 (driver interface, non-blocking loop) and the pin
+table in docs/04 §1. ESP-NOW like the bridge (same channel, bridge MAC as peer).
+Drivers: mpu6050 (complementary filter), env with chip-ID detection (bme280/bmp280) + dht11 fallback,
+bh1750, hc-sr04 + SG90 sweep -> ScanMsg, battery divider with calibration constants, buzzer, tb6612.
+Stub drivers reporting present=false with NaN fields: encoders, ina219, lidar.
+Send HelloMsg/TelemMsg/ScanMsg/EventMsg/AckMsg exactly per docs/02; enforce all five safety rules
+in docs/02 §5. Serial command "dump_golden" prints hex of a fixed TelemMsg and CmdMsg for
+tests/golden/. Explain flashing, pairing (MACs into secrets.h) and serial monitoring.
+```
+✔ Check: rover on, bridge plugged in, `python -m ground_station.app --link auto` → real data on the dashboard; unplug the bridge → wheels stop within 0.5 s.
+
+---
+
+## Phase 12 — Bench test
+```
+Write docs/07_BENCH_TEST.md: checklist for the rover on a stand (wheels in the air): each sensor vs
+a reference, watchdog (unplug bridge -> motors stop), E-STOP, tilt cut-off, battery calibration,
+ESP-NOW range test at 5/10/20/50 m (normal vs Long-Range mode) recording RSSI and loss %.
+Include result tables for the course report.
 ```
 
 ---
 
-## FUTURE hardware prompts (use when the part arrives — see docs/04)
+## FUTURE hardware prompts (when the part arrives — docs/04)
 
 **F1 – ESP32-CAM**
 ```
-The ESP32-CAM has arrived. Following docs/04 section C, create firmware/rover_cam (PlatformIO,
-AI-Thinker board), join ROVER-AP with static IP 192.168.4.2, serve /stream (QVGA MJPEG) and /status.
-Update rover_main so hello.hw.camera.present reflects whether 192.168.4.2/status answers.
-No changes to the dashboard should be needed — tell me if any are.
+The ESP32-CAM arrived. Per docs/04 §C create firmware/rover_cam (AI-Thinker): WiFi AP ROVER-CAM on
+channel 1, 192.168.4.1, /stream (QVGA MJPEG) and /status. The ground station already probes
+camera_url — tell me if anything else needs changing.
 ```
-
 **F2 – Wheel encoders**
 ```
-We fitted <LM393 optical / Hall> encoders with <N> counts per revolution on GPIO36/39. Following
-docs/04 section D, implement the encoders driver (interrupts, debounce, RPM over 100 ms), odometry
-(wheel radius <r> m, track width <b> m) and a per-wheel PID speed loop with a config flag to
-enable it. Update the simulator if its encoder model differs.
+We fitted <LM393 optical / Hall> encoders, <N> counts/rev, on GPIO36/39. Per docs/04 §D implement the
+encoders driver (interrupts, debounce, RPM over 100 ms), odometry (wheel radius <r> m, track
+<b> m), optional per-wheel PID behind a config flag. Set HW_ENCODERS and encoder_cpr in HELLO.
 ```
-
 **F3 – INA219**
 ```
-INA219 fitted at I2C 0x40 with a <0.1/0.01> ohm shunt. Implement the driver per docs/04 section E,
-fill pwr.ibat_a and pwr.p_w, and add mAh-used + runtime estimate in the ground station.
+INA219 at 0x40 with a <0.1/0.01> ohm shunt. Per docs/04 §E fill ibat_a/p_w, set HW_CURRENT, and add
+mAh used + runtime estimate in the ground station.
 ```
-
 **F4 – LiDAR**
 ```
-We have an <LD06/LD19> on UART2 RX GPIO16, mounted with a <deg> offset. Implement the lidar driver
-per docs/04 section F (packet parse + CRC, 1-degree bins, one scan per revolution, src "lidar").
-Measure the main loop rate before/after; if it drops below 80 Hz, propose moving lidar to ESP32 #2.
+<LD06/LD19> on UART2 RX GPIO16, mounted with <deg> offset. Per docs/04 §F parse packets + CRC,
+1-degree bins, 4 ScanMsg fragments per revolution (src SCAN_LIDAR). Measure loop_hz before/after;
+if < 80 Hz move parsing to a FreeRTOS task on core 0.
 ```
-
 **F5 – Mapping (only when the team decides)**
 ```
-/plan We want to start mapping. Using logged raw.jsonl files in logs/ (lidar scans + odom), compare
-3 approaches (occupancy grid with odometry only, ICP scan matching, BreezySLAM) for our hardware.
-Recommend one, then implement it behind the Mapper interface in ground_station/app/mapping/.
+We want to start mapping. Using logs/*/raw.jsonl (lidar scans + odom), compare occupancy grid from
+odometry, ICP scan matching and BreezySLAM for our hardware; recommend one and implement it behind
+the Mapper interface.
 ```
 
----
-
-## Utility prompts (any time)
-
+## Utility prompts
 **Protocol change**
 ```
-I want to add <field> to <message>. Update docs/02, protocol.py, fake_rover.py, the firmware
-driver and tests together, per the rule in CLAUDE.md. Show me the diff of docs/02 first.
+Add <field> to <message>. Update docs/02, rover_protocol.h (keep <= 250 B, update static_asserts),
+wire.py, protocol.py, fake_rover.py, firmware drivers and golden tests together. Show the docs/02
+diff first.
 ```
-
-**Code review before a commit**
+**Review before commit**
 ```
-Review the uncommitted changes against CLAUDE.md rules and docs/02. List problems by severity.
-Don't change code until I confirm.
+Review the uncommitted changes against CLAUDE.md rules and docs/02. List problems by severity; don't
+change code until I confirm.
 ```
-
-**Debugging**
+**Debug**
 ```
-<paste the error / serial log>. Explain the likely cause, how to confirm it, then propose a fix.
+<paste error / serial log>. Explain the likely cause, how to confirm it, then propose a fix.
 ```

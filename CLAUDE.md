@@ -1,48 +1,54 @@
-# Rover Ground Station — project memory for Claude Code
+# Rover Ground Station — project memory for Claude
 
 University project (Space Vehicles & Missiles, Universidad Europea, Year 3).
-We are building a small rover (ESP32-based) and a **ground-station dashboard** that runs on any
-laptop, receives telemetry + video over WiFi, displays it, and sends commands back.
+A small ESP32 rover + a **ground station** on any laptop. Telemetry and commands travel over
+**ESP-NOW** between the rover's ESP32 and a second ESP32 ("ground_bridge") plugged into the laptop by
+USB. Video (future) comes from an ESP32-CAM over its own WiFi access point.
 
-Read these before doing any work:
-- `docs/01_ARCHITECTURE.md` — system overview, network topology, folder layout
-- `docs/02_TELEMETRY_PROTOCOL.md` — **single source of truth** for every message
+Read before doing any work:
+- `docs/01_ARCHITECTURE.md` — system, links, folder layout, firmware structure
+- `docs/02_TELEMETRY_PROTOCOL.md` — **single source of truth** for every message (logical JSON, binary wire, serial framing)
+- `firmware/common/rover_protocol.h` — the C structs of the wire protocol
 - `docs/03_DASHBOARD_SPEC.md` — panels, behaviour, "not installed" states
-- `docs/04_FUTURE_HARDWARE.md` — hardware we don't have yet (software must be ready for it)
+- `docs/04_FUTURE_HARDWARE.md` — pin plan + hardware we don't have yet (software must be ready for it)
 - `docs/06_CLAUDE_CODE_PROMPTS.md` — the build sequence we follow
 
 ## Hard rules
-1. **Protocol first.** Any new field goes into `docs/02_TELEMETRY_PROTOCOL.md` AND
-   `ground_station/app/protocol.py` (pydantic models) AND `simulator/fake_rover.py` in the same change.
-   Never invent a field in the UI or firmware only.
-2. **Hardware is optional.** Every sensor/subsystem can be absent. The rover announces what it has in
-   the `hello` message (`hw` capabilities). The UI must show a clear "NOT INSTALLED" placeholder,
-   never crash, never show fake zeros. Fields for missing hardware are `null` or the block is omitted.
-3. **Safety is never removed.** The rover firmware stops the motors if no valid command/heartbeat
-   arrives for 500 ms. The dashboard E-STOP is always visible. Do not weaken either "temporarily".
-4. **Simulator parity.** Everything the real rover can send, `simulator/fake_rover.py` can send, with
-   CLI flags to enable/disable each hardware item (e.g. `--no-bme280 --encoders --lidar`).
-5. **Mapping/navigation is on the back burner.** Keep the map panel and `scan` message as stubs;
-   don't build SLAM until we say so.
-6. Keep it runnable on Windows, macOS and Linux. Use `pathlib`, no hard-coded absolute paths.
+1. **Protocol first.** A field change updates, in one commit: `docs/02`, `rover_protocol.h`,
+   `ground_station/app/wire.py`, `ground_station/app/protocol.py`, `simulator/fake_rover.py`, golden tests.
+   Every wire message must stay ≤ 250 bytes (`static_assert`).
+2. **Hardware is optional.** Missing hardware → `NaN` on the wire → `null` in JSON → "NOT INSTALLED" or
+   "—" in the UI. Never fake zeros, never crash. HELLO `hw_present` says what exists.
+3. **Safety is never removed.** rover_main stops the motors if no valid CmdMsg for 500 ms; E-STOP latches;
+   tilt and low-battery limits. The dashboard E-STOP is always visible. Don't weaken these "temporarily".
+4. **The bridge stays dumb.** ground_bridge forwards bytes, adds RSSI and status. It never decodes
+   telemetry and never generates commands, so protocol changes don't require re-flashing it.
+5. **Simulator parity.** `simulator/fake_rover.py` emits the exact serial byte stream of the bridge over
+   TCP, with flags to enable/disable each hardware item.
+6. **Mapping/navigation is on the back burner.** Keep the map panel and SCAN message; no SLAM until asked.
+7. Must run on Windows, macOS, Linux. `pathlib`, no absolute paths. The laptop may be offline →
+   vendor all frontend libraries locally.
 
 ## Stack
-- Ground station: Python 3.12, FastAPI + uvicorn, `websockets`, pydantic v2, OpenCV (later), pytest.
-- Frontend: plain HTML/CSS/JS served by FastAPI from `ground_station/app/web/` (no build step).
-  Charts with uPlot or Chart.js loaded from a local vendored file (must work offline — the laptop
-  is on the rover's WiFi with no internet).
-- Firmware: PlatformIO + Arduino framework, in `firmware/rover_main/` and `firmware/rover_cam/`.
-  WiFi credentials live in `firmware/*/include/secrets.h` (gitignored); commit `secrets.example.h`.
+- Ground station: Python 3.12, FastAPI + uvicorn, pydantic v2, pyserial, cobs, numpy, pytest.
+- Frontend: plain HTML/CSS/JS in `ground_station/app/web/` (no build step), uPlot vendored.
+- Firmware: PlatformIO + Arduino framework (arduino-esp32 3.x), libraries: ArduinoJson (debug only),
+  PacketSerial (bridge), Adafruit BME280, BH1750, MPU6050 (or own I2C code), ESP32Servo.
+  Projects: `firmware/rover_main`, `firmware/ground_bridge`, `firmware/rover_cam` (future).
+  Each has `include/secrets.h` (gitignored: PEER_MAC, ESPNOW_CHANNEL, optional PMK/LMK) and a committed
+  `secrets.example.h`. Both include `../common/rover_protocol.h`.
 
 ## Commands
-- Setup: `py -3.12 -m venv .venv` then `.venv\Scripts\activate` (Windows) / `source .venv/bin/activate`
+- Setup: `py -3.12 -m venv .venv` → `.venv\Scripts\activate` (Windows) / `source .venv/bin/activate`
 - Install: `pip install -r ground_station/requirements.txt`
-- Run simulator: `python simulator/fake_rover.py`
-- Run ground station: `python -m ground_station.app --rover ws://127.0.0.1:8765` (simulator)
-  or `--rover ws://192.168.4.1:81` (real rover)
+- Simulator: `python simulator/fake_rover.py [--encoders --ina219 --lidar --camera --bmp280 --lossy 5]`
+- Ground station (sim): `python -m ground_station.app --link socket://127.0.0.1:8765`
+- Ground station (real): `python -m ground_station.app --link COM5` (Windows) / `--link /dev/ttyUSB0`
 - Tests: `pytest -q`
+- Firmware: `pio run -d firmware/rover_main -t upload` · `pio device monitor -b 115200`
 
 ## Style
-- Small modules, type hints, docstrings on public functions. Units in field names or documented.
-- Commit messages: imperative, short. One feature per commit.
+- Small modules, type hints, docstrings on public functions; units in field names.
+- Firmware: no `delay()` in loop, no `String` in hot paths, no heavy work in ESP-NOW callbacks.
+- One feature per commit, imperative messages.
 - When unsure about hardware behaviour, ask instead of guessing.
