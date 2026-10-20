@@ -2,36 +2,86 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Rover Ground Station — debug</title>
-<style>
-  body { background: #111; color: #ddd; font-family: monospace; margin: 1rem; }
-  #link-state { font-size: 2rem; font-weight: bold; }
-  #link-state.OK { color: #4caf50; }
-  #link-state.STALE { color: #ff9800; }
-  #link-state.LOST, #link-state.NO_BRIDGE { color: #f44336; }
-  pre { background: #1a1a1a; padding: 1rem; overflow: auto; }
-</style>
+<title>Rover Ground Station</title>
+<link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
-  <h1>Rover Ground Station — debug view</h1>
-  <p>Link state: <span id="link-state">—</span></p>
-  <pre id="snapshot">waiting for /ws/ui…</pre>
-<script>
-  const ws = new WebSocket(`ws://${location.host}/ws/ui`);
-  const linkState = document.getElementById("link-state");
-  const snapshotEl = document.getElementById("snapshot");
+<div id="app">
+  <div id="topbar">
+    <div class="tb-item">
+      <span id="link-dot" class="link-dot"></span>
+      <span id="link-state-text" class="link-state-text">—</span>
+    </div>
+    <div class="tb-item"><span id="tb-port">—</span></div>
+    <div class="tb-item">
+      <span class="tb-label">RSSI</span>
+      <span>↑<span id="tb-rssi-up">—</span></span>
+      <span>↓<span id="tb-rssi-down">—</span></span>
+    </div>
+    <div class="tb-item"><span class="tb-label">RTT</span><span id="tb-rtt">—</span></div>
+    <div class="tb-item"><span class="tb-label">loss</span><span id="tb-loss">—</span></div>
+    <div class="tb-item"><span id="tb-clock">T+00:00:00</span></div>
+    <div class="tb-item">
+      <span id="tb-vbat">—</span>
+      <span id="tb-battery-bar" class="battery-bar"><span class="fill"></span></span>
+      <span id="tb-soc">—</span>
+    </div>
+    <div class="tb-item">
+      <span id="tb-rec-dot" class="rec-dot"></span>
+      <span class="tb-label">REC</span>
+    </div>
+    <button id="estop-btn">E-STOP</button>
+  </div>
 
-  ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    const state = data.link ? data.link.state : "—";
-    linkState.textContent = state;
-    linkState.className = state;
-    snapshotEl.textContent = JSON.stringify(data, null, 2);
-  };
-  ws.onclose = () => {
-    linkState.textContent = "DISCONNECTED";
-    linkState.className = "LOST";
-  };
-</script>
+  <div id="no-bridge-banner">
+    <strong>Plug in ground bridge</strong>
+    <span>— select a serial port:</span>
+    <select id="port-select"><option value="">(loading…)</option></select>
+    <button id="port-connect">Connect</button>
+    <span id="port-status"></span>
+  </div>
+
+  <div id="grid">
+    <section id="panel-video" class="panel">
+      <h2>Video</h2>
+      <div class="placeholder-body">
+        <div class="not-installed">CAMERA NOT INSTALLED<br>see docs/04_FUTURE_HARDWARE.md</div>
+      </div>
+    </section>
+
+    <section id="panel-map" class="panel">
+      <h2>Map</h2>
+      <div class="placeholder-body">polar plot of latest scan (stub)</div>
+    </section>
+
+    <section id="panel-environment" class="panel">
+      <h2>Environment</h2>
+      <div class="placeholder-body">temp / hum / press / lux + 5-min sparklines</div>
+    </section>
+
+    <section id="panel-health" class="panel">
+      <h2>Rover Health</h2>
+      <div class="placeholder-body" style="flex-direction:column; align-items:stretch; gap:0.4rem;">
+        <div style="color:var(--text-dim); font-size:0.8rem;">motors / attitude / sonar — placeholder</div>
+        <div>
+          <div class="subhead">Power</div>
+          <div id="power-widget"></div>
+        </div>
+        <div style="color:var(--text-dim); font-size:0.8rem;">sys: heap / loop Hz / uptime — placeholder</div>
+      </div>
+    </section>
+
+    <section id="panel-control" class="panel">
+      <h2>Control</h2>
+      <div class="placeholder-body">WASD / mode / servo / buzzer (placeholder)</div>
+    </section>
+
+    <section id="panel-eventlog" class="panel">
+      <h2>Event Log</h2>
+      <div class="placeholder-body">events will appear here</div>
+    </section>
+  </div>
+</div>
+<script type="module" src="/static/js/dashboard.js"></script>
 </body>
 </html>

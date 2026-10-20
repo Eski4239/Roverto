@@ -1,0 +1,202 @@
+:root {
+  --bg: #0d0f12;
+  --panel-bg: #171a1f;
+  --panel-border: #2a2e35;
+  --text: #d8dce2;
+  --text-dim: #7a828f;
+  --green: #4caf50;
+  --amber: #ff9800;
+  --red: #f44336;
+  --grey: #4a505a;
+  --accent: #3a9bdc;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------------------------------------------------------------- top bar */
+
+#topbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  padding: 0.4rem 0.9rem;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--panel-border);
+  min-height: 2.6rem;
+}
+
+.tb-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.tb-label { color: var(--text-dim); font-size: 0.75rem; }
+
+.link-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--grey);
+  display: inline-block;
+}
+.link-dot.OK { background: var(--green); }
+.link-dot.STALE { background: var(--amber); }
+.link-dot.LOST, .link-dot.NO_BRIDGE { background: var(--red); }
+
+.link-state-text { font-weight: 600; }
+
+.battery-bar {
+  width: 54px;
+  height: 12px;
+  border: 1px solid var(--text-dim);
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+}
+.battery-bar > .fill {
+  position: absolute;
+  inset: 0;
+  width: 0%;
+  background: var(--grey);
+}
+
+.rec-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--grey);
+}
+.rec-dot.active { background: var(--red); }
+
+#estop-btn {
+  margin-left: auto;
+  background: var(--red);
+  color: #fff;
+  border: none;
+  font-weight: 700;
+  padding: 0.4rem 1.1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+}
+#estop-btn.latched {
+  background: #7a0000;
+  box-shadow: 0 0 0 2px var(--red) inset;
+}
+
+.value-green { color: var(--green); }
+.value-amber { color: var(--amber); }
+.value-red { color: var(--red); }
+.value-grey, .hw-absent, .hw-stale { color: var(--grey) !important; }
+
+/* NO_BRIDGE banner */
+#no-bridge-banner {
+  display: none;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.9rem;
+  background: #3a1414;
+  border-bottom: 1px solid var(--red);
+}
+#no-bridge-banner.visible { display: flex; }
+#no-bridge-banner select, #no-bridge-banner button {
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+}
+
+/* ---------------------------------------------------------------- grid */
+
+#grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: minmax(0, 1.3fr) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "video video map"
+    "environment health control"
+    "eventlog eventlog eventlog";
+  gap: 0.5rem;
+  padding: 0.5rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.7rem;
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel > h2 {
+  margin: 0 0 0.4rem 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 0.3rem;
+}
+
+#panel-video { grid-area: video; }
+#panel-map { grid-area: map; }
+#panel-environment { grid-area: environment; }
+#panel-health { grid-area: health; }
+#panel-control { grid-area: control; }
+#panel-eventlog { grid-area: eventlog; max-height: 9rem; }
+
+.placeholder-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.not-installed {
+  color: var(--grey);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* power widget (phase-4 live sub-panel inside Rover Health) */
+.power-widget { display: flex; flex-direction: column; gap: 0.15rem; }
+.power-widget .row { display: flex; justify-content: space-between; gap: 0.5rem; }
+.power-widget .row .k { color: var(--text-dim); }
+
+.subhead {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0.4rem 0 0.2rem 0;
+}

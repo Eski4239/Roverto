@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import serial.tools.list_ports
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -129,6 +130,13 @@ def create_app(args: argparse.Namespace) -> FastAPI:
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
+
+    @app.get("/ports")
+    async def ports() -> list[dict]:
+        return [
+            {"device": p.device, "description": p.description}
+            for p in serial.tools.list_ports.comports()
+        ]
 
     @app.websocket("/ws/ui")
     async def ws_ui(ws: WebSocket) -> None:
