@@ -251,8 +251,13 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         nonlocal controlling_ws, estop_remaining, estop_reset_pending
         await ws.accept()
         ui_sockets.add(ws)
-        if controlling_ws is None:
-            controlling_ws = ws
+        # F21: control is NOT granted here just because nobody else has it
+        # -- that would auto-promote every tab that reconnects after a
+        # backend restart (ws.js retries on close) to controller, with no
+        # operator action. Assignment happens once the client's first
+        # "hello" message says whether this is a fresh page load (may
+        # become controller if none exists) or an automatic reconnect
+        # (always stays a viewer; TAKE CONTROL is a deliberate action).
 
         async def _push_snapshots() -> None:
             while True:
@@ -271,6 +276,12 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             while True:
                 data = await ws.receive_json()
                 msg_type = data.get("type")
+                if msg_type == "hello":
+                    # F21: only a fresh page load (reconnect=False) may be
+                    # auto-granted control, and only if nobody has it.
+                    if not data.get("reconnect") and controlling_ws is None:
+                        controlling_ws = ws
+                    continue
                 if msg_type == "take_control":
                     if controlling_ws is None:
                         controlling_ws = ws

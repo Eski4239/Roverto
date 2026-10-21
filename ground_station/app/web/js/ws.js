@@ -8,14 +8,25 @@ export class UiSocket {
     this._onOpen = onOpen || (() => {});
     this._onClose = onClose || (() => {});
     this._ws = null;
+    // F21: the very first connect() from a fresh page load may become
+    // controller if nobody else is; every connect() after that (ws.js's
+    // own auto-reconnect, e.g. after a backend restart) tells the server
+    // this is a reconnect, not a fresh load, so it's never auto-promoted
+    // -- the operator has to press TAKE CONTROL again on purpose.
+    this._hasConnectedBefore = false;
     this._connect();
   }
 
   _connect() {
     const url = `ws://${location.host}/ws/ui`;
     const ws = new WebSocket(url);
+    const isReconnect = this._hasConnectedBefore;
+    this._hasConnectedBefore = true;
     this._ws = ws;
-    ws.onopen = () => this._onOpen();
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "hello", reconnect: isReconnect }));
+      this._onOpen();
+    };
     ws.onmessage = (event) => {
       let data;
       try {

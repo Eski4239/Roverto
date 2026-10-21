@@ -55,6 +55,15 @@ async def _recv_snapshot(ws, timeout: float = TIMEOUT) -> dict:
     return json.loads(raw)
 
 
+async def _send_hello(ws, *, reconnect: bool = False) -> None:
+    """F21: the first message every real client sends -- a fresh page load
+    (reconnect=False) may be auto-granted control if nobody has it; an
+    automatic reconnect (reconnect=True, ws.js's own retry-on-close) never
+    is. Most of this file's tests simulate "a tab just loaded the page",
+    so they send this right after connecting, same as dashboard.js does."""
+    await ws.send(json.dumps({"type": "hello", "reconnect": reconnect}))
+
+
 async def _recv_latest_snapshot(ws, settle: float = 0.3) -> dict:
     """Drain any snapshots queued ahead of a just-sent control message (the
     10 Hz push keeps streaming while this process was awaiting elsewhere)
@@ -105,11 +114,15 @@ async def test_second_tab_is_view_only_and_ignored():
     app_server, serve_task, app_port = await _start_app(sim_port)
     try:
         async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_a:
-            snap_a = await _recv_snapshot(ws_a)
+            await _recv_snapshot(ws_a)
+            await _send_hello(ws_a)
+            snap_a = await _recv_latest_snapshot(ws_a)
             assert snap_a["in_control"] is True
 
             async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_b:
-                snap_b = await _recv_snapshot(ws_b)
+                await _recv_snapshot(ws_b)
+                await _send_hello(ws_b)
+                snap_b = await _recv_latest_snapshot(ws_b)
                 assert snap_b["in_control"] is False
                 assert snap_b["controller_present"] is True
 
@@ -130,9 +143,11 @@ async def test_no_auto_promotion_on_controller_disconnect():
     try:
         ws_a = await websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui")
         await _recv_snapshot(ws_a)  # confirm A is attached
+        await _send_hello(ws_a)
 
         async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_b:
             await _recv_snapshot(ws_b)  # B is view-only while A holds control
+            await _send_hello(ws_b)
 
             await ws_a.close()
 
@@ -220,10 +235,13 @@ async def test_estop_reset_ignored_from_viewer_tab():
     app_server, serve_task, app_port = await _start_app(sim_port)
     try:
         async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_a:
-            await _recv_snapshot(ws_a)  # A is in control
+            await _recv_snapshot(ws_a)
+            await _send_hello(ws_a)  # A is in control
 
             async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_b:
-                snap_b = await _recv_snapshot(ws_b)
+                await _recv_snapshot(ws_b)
+                await _send_hello(ws_b)
+                snap_b = await _recv_latest_snapshot(ws_b)
                 assert snap_b["in_control"] is False
 
                 # B (viewer) latches E-STOP -- allowed, estop bypasses gating.
@@ -306,6 +324,7 @@ async def test_estop_reaches_simulator_fast_and_consistently():
     gs_state = app_server._gs_app.state.ground_state
     try:
         async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws:
+            await _send_hello(ws)  # F20: needs to be controller to estop_reset
             # Wait for the link to actually be OK (not just "connected"), the
             # same way a real operator can't press E-STOP before the page
             # shows live data. Without this, sample 0 can race the backend's
@@ -536,6 +555,122 @@ async def test_ingest_loop_survives_unexpected_exception():
                 "_ingest_loop stopped delivering TELEM after an exception in "
                 "state.ingest() -- it should log and continue, not die"
             )
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
+async def test_f21_backend_restart_tabs_reconnect_as_viewers():
+    """F21: two tabs, backend restart -> both come back as viewers, nobody
+    auto-promoted to controller, and the heartbeat still sends drive=0
+    (safe default) with nobody in control."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    try:
+        ws_a = await websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui")
+        await _recv_snapshot(ws_a)
+        await _send_hello(ws_a)
+        snap_a = await _recv_latest_snapshot(ws_a)
+        assert snap_a["in_control"] is True
+
+        ws_b = await websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui")
+        await _recv_snapshot(ws_b)
+        await _send_hello(ws_b)
+        snap_b = await _recv_latest_snapshot(ws_b)
+        assert snap_b["in_control"] is False
+
+        # backend restart: close the old server, start a fresh one bound
+        # to a NEW port (a real restart would keep the same port, but the
+        # test harness can't rebind the same OS-assigned port reliably --
+        # what matters here is a fresh create_app()/fresh controlling_ws
+        # closure, which is what actually resets on a real restart).
+        await ws_a.close()
+        await ws_b.close()
+        await _stop_app(app_server, serve_task)
+        app_server, serve_task, app_port = await _start_app(sim_port)
+
+        # both tabs' ws.js auto-reconnects (reconnect=True) against the
+        # new backend -- simulated here by connecting fresh and sending
+        # hello with reconnect=True, same as the real client would after
+        # its onclose handler fires.
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_a2:
+            await _recv_snapshot(ws_a2)
+            await _send_hello(ws_a2, reconnect=True)
+            snap_a2 = await _recv_latest_snapshot(ws_a2)
+            assert snap_a2["in_control"] is False, "tab A auto-promoted after reconnect"
+
+            async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_b2:
+                await _recv_snapshot(ws_b2)
+                await _send_hello(ws_b2, reconnect=True)
+                snap_b2 = await _recv_latest_snapshot(ws_b2)
+                assert snap_b2["in_control"] is False, "tab B auto-promoted after reconnect"
+                assert snap_b2["controller_present"] is False, "nobody should be in control"
+
+                # heartbeat still runs and sends a safe (zero) drive with
+                # nobody in control -- confirmed via the simulator's own
+                # applied drive, not the UI's last_ui_cmd (which is also
+                # zero by construction, so check the rover-side effect).
+                rover_state = sim_server._rover_state
+                await asyncio.sleep(0.3)
+                assert rover_state.drive_l == 0.0
+                assert rover_state.drive_r == 0.0
+                assert rover_state.wd_ok is True, "heartbeat stopped feeding the watchdog"
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
+async def test_f21_reload_after_restart_becomes_controller():
+    """F21: after a restart leaves everyone a viewer, a tab that reloads
+    the page (a fresh load, reconnect=False) does become controller."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    try:
+        # simulate "everyone is a viewer after a restart" directly, without
+        # repeating the full restart dance already covered above.
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws:
+            await _recv_snapshot(ws)
+            await _send_hello(ws, reconnect=True)
+            snap = await _recv_latest_snapshot(ws)
+            assert snap["in_control"] is False
+
+            # the operator reloads the page: a brand new connection, fresh
+            # load (reconnect=False) -- this one should become controller
+            # since nobody currently has it.
+            async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_reload:
+                await _recv_snapshot(ws_reload)
+                await _send_hello(ws_reload, reconnect=False)
+                snap_reload = await _recv_latest_snapshot(ws_reload)
+                assert snap_reload["in_control"] is True, "fresh page load did not become controller"
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
+async def test_f21_fresh_load_while_controller_exists_stays_viewer():
+    """F21: a fresh page load while a controller already exists is still
+    just a viewer -- "fresh load may get control" only applies when
+    nobody has it, it's not an override."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_a:
+            await _recv_snapshot(ws_a)
+            await _send_hello(ws_a, reconnect=False)
+            snap_a = await _recv_latest_snapshot(ws_a)
+            assert snap_a["in_control"] is True
+
+            async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_b:
+                await _recv_snapshot(ws_b)
+                await _send_hello(ws_b, reconnect=False)  # also a "fresh load"
+                snap_b = await _recv_latest_snapshot(ws_b)
+                assert snap_b["in_control"] is False, (
+                    "a fresh load stole control from an existing controller"
+                )
+                assert snap_b["controller_present"] is True
     finally:
         await _stop_app(app_server, serve_task)
         sim_server.close()
