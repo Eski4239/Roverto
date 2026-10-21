@@ -550,7 +550,16 @@ html, body {
 }
 .motor-bar-fill.cmd { background: var(--accent); }
 .motor-bar-fill.rpm { background: var(--muted); }
-.motor-row .v { width: 3rem; text-align: right; }
+.motor-row .v {
+  width: 3rem;
+  text-align: right;
+  /* F22: rpm falls back to "NOT INSTALLED" (hwstate.js renderField) when
+     --encoders isn't present, which is much wider than the 3rem column
+     sized for a numeric value -- truncate instead of overflowing the row. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .attitude-widget { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .attitude-horizon, .attitude-compass {

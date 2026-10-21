@@ -71,6 +71,7 @@ const socket = new UiSocket({
     renderLinkCard(snapshot);
     renderEstop(snapshot);
     renderLostBanner(snapshot, nowWallMs);
+    renderNoBridgeBanner(snapshot);
     if (snapshot.link && snapshot.link.state === "NO_BRIDGE") {
       portPicker.ensureLoaded();
     }
@@ -112,6 +113,7 @@ function renderLinkCard(snapshot) {
 const estopBtn = document.getElementById("estop-btn");
 const estopBanner = document.getElementById("estop-banner");
 const lostBanner = document.getElementById("lost-banner");
+const noBridgeBanner = document.getElementById("no-bridge-banner");
 let roverEstopActive = false;
 let resetRequestedAt = 0; // debounce: avoid spamming estop_reset while rover hasn't cleared yet
 
@@ -147,6 +149,17 @@ function renderLostBanner(snapshot, nowWallMs) {
   } else {
     lostBanner.classList.remove("visible");
   }
+}
+
+function renderNoBridgeBanner(snapshot) {
+  // F25: this banner's HTML/CSS (port picker, "Plug in ground bridge")
+  // was fully built (docs/03 §5) but nothing ever toggled its .visible
+  // class -- NO_BRIDGE only ever showed up in the top-bar link pill, this
+  // banner stayed permanently hidden. Same visible-class pattern as
+  // renderLostBanner/renderEstop above.
+  if (!noBridgeBanner) return;
+  const link = snapshot.link || {};
+  noBridgeBanner.classList.toggle("visible", link.state === "NO_BRIDGE");
 }
 
 estopBtn.addEventListener("click", () => {

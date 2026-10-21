@@ -44,8 +44,10 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _start_simulator(*, silent_after_s: float | None = None):
-    argv = ["--encoders", "--ina219"]
+async def _start_simulator(
+    *, silent_after_s: float | None = None, hw_flags: list[str] | None = None
+):
+    argv = list(hw_flags) if hw_flags is not None else ["--encoders", "--ina219"]
     if silent_after_s is not None:
         argv += ["--rover-silent-after", str(silent_after_s), "--rover-silent-for", "30"]
     args = sim_parse_args(argv)
@@ -78,17 +80,27 @@ async def _stop(server: uvicorn.Server) -> None:
         server._gs_task.cancel()
 
 
+# F22: ids where overflow:hidden + ellipsis truncation is a deliberate
+# design choice, not a bug -- docs/03b §1's "clip by design is OK where
+# intentional" exception. Currently just the motor RPM value, which falls
+# back to the much-wider "NOT INSTALLED" (hwstate.js renderField) when
+# --encoders isn't present; the 3rem column is sized for a numeric value,
+# and truncating the rare fallback text is the accepted tradeoff (F22).
+KNOWN_INTENTIONAL_CLIPPING = {"motor-l-rpm-value", "motor-r-rpm-value"}
+
+
 async def _overflow_report(page) -> dict:
     """docs/03b §1 "no inner scrollbars at 1366x768+", split per F14:
     - scroll: overflow auto/scroll with content bigger than the box (a real
       inner scrollbar the user could see/use).
     - clipped: overflow hidden/clip with content bigger than the box (text
-      cut off, no scrollbar -- docs/03b's "clip by design" is only OK where
-      intentional, so still worth surfacing, just separately from `scroll`).
+      cut off, no scrollbar) that is NOT in KNOWN_INTENTIONAL_CLIPPING --
+      docs/03b's "clip by design" is only OK where intentional, so an
+      undocumented one still fails; a documented one is filtered out here.
     Elements that are hidden (display:none), have zero rendered size, or
     have no offsetParent (e.g. an inactive <section hidden> preset panel)
     are skipped entirely -- they are not visible overflow bugs."""
-    return await page.evaluate(
+    raw = await page.evaluate(
         """() => {
             const scroll = [];
             const clipped = [];
@@ -114,6 +126,10 @@ async def _overflow_report(page) -> dict:
             return { scroll, clipped };
         }"""
     )
+    return {
+        "scroll": raw["scroll"],
+        "clipped": [cid for cid in raw["clipped"] if cid not in KNOWN_INTENTIONAL_CLIPPING],
+    }
 
 
 @pytest.fixture
@@ -292,3 +308,171 @@ async def _run_space_always_triggers_estop(base_url: str) -> None:
 async def test_space_always_triggers_estop_regardless_of_focus(running_backend):
     base_url, _ = running_backend
     await asyncio.wait_for(_run_space_always_triggers_estop(base_url), timeout=30.0)
+
+
+# ---------------------------------------------------------------- F22 ----
+
+HW_FLAG_SETS = {
+    "all_flags": ["--encoders", "--ina219", "--lidar"],
+    "no_flags": [],
+}
+
+
+async def _check_no_overflow(page, label: str) -> None:
+    report = await _overflow_report(page)
+    assert report["scroll"] == [], f"{label}: inner scroll on {report['scroll']}"
+    assert report["clipped"] == [], f"{label}: clipped content on {report['clipped']}"
+
+
+async def _run_layout_matrix() -> None:
+    """F22: Systems/Science/Drive x (all hardware flags / none), at
+    1366x768, must never show an inner scrollbar or clipped content --
+    the full acceptance matrix from docs/03b §6, beyond the single
+    --encoders --ina219 combination the other tests use."""
+    async with playwright_async.async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            for flagset_name, hw_flags in HW_FLAG_SETS.items():
+                sim_server, sim_port = await _start_simulator(hw_flags=hw_flags)
+                backend = await _start_backend(sim_port)
+                base_url = f"http://127.0.0.1:{backend._gs_port}"
+                try:
+                    page = await browser.new_page(viewport=VIEWPORT)
+                    await page.goto(base_url)
+                    await page.wait_for_timeout(500)
+
+                    for preset in PRESETS:
+                        await page.click(f'[data-preset="{preset}"]')
+                        await page.wait_for_timeout(200)
+                        await _check_no_overflow(page, f"{flagset_name}/{preset}")
+
+                    await page.close()
+                finally:
+                    await _stop(backend)
+                    sim_server.close()
+                    try:
+                        await asyncio.wait_for(sim_server.wait_closed(), timeout=TEARDOWN_TIMEOUT_S)
+                    except asyncio.TimeoutError:
+                        pass
+        finally:
+            await browser.close()
+
+
+async def test_layout_matrix_presets_x_hardware_flags():
+    await asyncio.wait_for(_run_layout_matrix(), timeout=120.0)
+
+
+async def _run_no_bridge_no_overflow() -> None:
+    """F22: NO_BRIDGE state (backend up, nothing listening on the link
+    port) must also respect the no-inner-scroll rule."""
+    unused_port = _free_port()  # guaranteed nothing is listening here
+    backend = await _start_backend(unused_port)
+    base_url = f"http://127.0.0.1:{backend._gs_port}"
+    try:
+        async with playwright_async.async_playwright() as pw:
+            browser = await pw.chromium.launch()
+            try:
+                page = await browser.new_page(viewport=VIEWPORT)
+                await page.goto(base_url)
+                await page.wait_for_selector("#no-bridge-banner.visible", timeout=10_000)
+                await _check_no_overflow(page, "NO_BRIDGE")
+                await page.screenshot(path=f"{SCREENSHOT_DIR}/no_bridge.png")
+            finally:
+                await browser.close()
+    finally:
+        await _stop(backend)
+
+
+async def test_no_bridge_state_no_overflow():
+    await asyncio.wait_for(_run_no_bridge_no_overflow(), timeout=30.0)
+
+
+async def _run_narrow_viewport_no_overlap(base_url: str) -> None:
+    """F22: narrow viewport (800x900) must wrap without elements
+    overlapping each other -- checked via each element's bounding rect,
+    since overlap isn't the same failure mode as overflow (two sibling
+    cards could each individually fit with no scroll/clip and still sit
+    on top of one another if a flex/grid wrap went wrong)."""
+    narrow_viewport = {"width": 800, "height": 900}
+    async with playwright_async.async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page(viewport=narrow_viewport)
+            await page.goto(base_url)
+            await page.wait_for_timeout(500)
+
+            for preset in PRESETS:
+                await page.click(f'[data-preset="{preset}"]')
+                await page.wait_for_timeout(200)
+                overlaps = await page.evaluate(
+                    """() => {
+                        const panel = document.querySelector('.preset-panel:not([hidden])');
+                        if (!panel) return [];
+                        const groups = [panel, document.querySelector('#control-column')]
+                            .filter(Boolean)
+                            .map(el => Array.from(el.children));
+                        const overlaps = [];
+                        for (const kids of groups) {
+                            const rects = kids
+                                .filter(el => el.offsetParent !== null)
+                                .map(el => ({ el, r: el.getBoundingClientRect() }))
+                                .filter(({ r }) => r.width > 0 && r.height > 0);
+                            for (let i = 0; i < rects.length; i++) {
+                                for (let j = i + 1; j < rects.length; j++) {
+                                    const a = rects[i].r, b = rects[j].r;
+                                    const xOverlap = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+                                    const yOverlap = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+                                    if (xOverlap > 1 && yOverlap > 1) {
+                                        overlaps.push([
+                                            rects[i].el.id || rects[i].el.className,
+                                            rects[j].el.id || rects[j].el.className,
+                                        ]);
+                                    }
+                                }
+                            }
+                        }
+                        return overlaps;
+                    }"""
+                )
+                assert overlaps == [], f"{preset} at 800x900: overlapping elements {overlaps}"
+        finally:
+            await browser.close()
+
+
+async def test_narrow_viewport_no_overlapping_elements(running_backend):
+    base_url, _ = running_backend
+    await asyncio.wait_for(_run_narrow_viewport_no_overlap(base_url), timeout=60.0)
+
+
+async def _run_presets_persist_across_reload(base_url: str) -> None:
+    """F22: preset choice is remembered in localStorage and survives a
+    page reload (docs/03b §1.4)."""
+    async with playwright_async.async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page(viewport=VIEWPORT)
+            await page.goto(base_url)
+            await page.wait_for_timeout(500)
+
+            await page.click('[data-preset="drive"]')
+            await page.wait_for_timeout(200)
+            active_before = await page.evaluate(
+                "() => document.querySelector('.preset-panel:not([hidden])').dataset.preset"
+            )
+            assert active_before == "drive"
+
+            await page.reload()
+            await page.wait_for_timeout(500)
+            active_after = await page.evaluate(
+                "() => document.querySelector('.preset-panel:not([hidden])').dataset.preset"
+            )
+            assert active_after == "drive", (
+                f"preset did not survive reload: was 'drive', now {active_after!r}"
+            )
+        finally:
+            await browser.close()
+
+
+async def test_presets_persist_across_reload(running_backend):
+    base_url, _ = running_backend
+    await asyncio.wait_for(_run_presets_persist_across_reload(base_url), timeout=30.0)
