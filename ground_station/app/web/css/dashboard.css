@@ -375,6 +375,10 @@ html, body {
   flex: 1;
 }
 
+.preset-panel[hidden] {
+  display: none;
+}
+
 .card-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
