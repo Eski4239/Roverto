@@ -3,9 +3,9 @@
 // mockup (docs/design/phase5b_live_presets.dc.html), this is one card that
 // swaps -- the camera feed takes the space when fitted, and the sweep moves
 // beside it -- not two permanent side-by-side panels.
-import { renderField, thresholdClass } from "./hwstate.js";
+import { renderField } from "./hwstate.js";
+import { thresholdClassFor } from "./thresholds.js";
 
-const THRESHOLDS_DIST = { greenAbove: 50, redBelow: 20 };
 const MAX_RANGE_CM = 200;
 const RANGE_RINGS_CM = [66, 133, 200]; // 0.66m / 1.33m / 2m, per spec
 const REDRAW_PERIOD_MS = 500;
@@ -56,7 +56,7 @@ export class SurroundingsWidget {
     const distEl = document.getElementById("surr-dist");
     if (distEl) {
       distEl.textContent = field.text;
-      distEl.className = `tile-value ${field.cls || thresholdClass(sonar.dist_cm, THRESHOLDS_DIST)}`;
+      distEl.className = `tile-value ${field.cls || thresholdClassFor("sonar_dist_cm", sonar.dist_cm)}`;
     }
 
     const cameraEl = document.getElementById("surr-camera");
