@@ -37,8 +37,12 @@ const surroundingsWidget = new SurroundingsWidget(document.getElementById("surro
 
 // D-013: motor bars scale to ±pwm_max, not ±255 -- fetched once at startup
 // alongside the threshold table (single /config round trip for both).
-let motorWidgetSystems = new MotorWidget(document.getElementById("motor-card-systems"), 255, expandSlotEl);
-let motorWidgetDrive = new MotorWidget(document.getElementById("motor-card-drive"), 255, null);
+// F6: previously constructed with a hardcoded `255` default and replaced
+// once /config resolved, so bars briefly read against the wrong full
+// scale on every page load. Stay null (unrendered, same as every other
+// value before the first snapshot) until the real pwm_max is known.
+let motorWidgetSystems = null;
+let motorWidgetDrive = null;
 const attitudeWidgetSystems = new AttitudeWidget(document.getElementById("attitude-card-systems"), expandSlotEl);
 const attitudeWidgetDrive = new AttitudeWidget(document.getElementById("attitude-card-drive"), null);
 
@@ -63,8 +67,8 @@ const socket = new UiSocket({
     sonarCardScience.render(snapshot, nowWallMs);
     sysStatsWidget.render(snapshot);
     surroundingsWidget.render(snapshot, nowWallMs);
-    motorWidgetSystems.render(snapshot);
-    motorWidgetDrive.render(snapshot);
+    if (motorWidgetSystems) motorWidgetSystems.render(snapshot);
+    if (motorWidgetDrive) motorWidgetDrive.render(snapshot);
     attitudeWidgetSystems.render(snapshot, nowWallMs);
     attitudeWidgetDrive.render(snapshot, nowWallMs);
     controlPanel.render(snapshot);
