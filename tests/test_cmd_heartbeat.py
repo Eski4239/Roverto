@@ -137,6 +137,55 @@ async def test_second_tab_is_view_only_and_ignored():
         await sim_server.wait_closed()
 
 
+async def test_f1_buzzer_off_on_take_control_reaches_simulator():
+    """F1: take_control resets buzzer to False alongside drive/servo
+    (main.py's control-handoff block). Verified at the wire -- the first
+    CmdMsg the simulator actually receives after the handoff must carry
+    buzzer=False, not just that last_ui_cmd was reset locally."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    rover_state = sim_server._rover_state
+    try:
+        ws_a = await websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui")
+        await _recv_snapshot(ws_a)
+        await _send_hello(ws_a)
+        await _recv_latest_snapshot(ws_a)
+
+        # A turns the buzzer on -- confirm it actually reaches the
+        # simulator first, so the later "off" check is a real transition.
+        await ws_a.send(json.dumps({"type": "cmd", "buzzer": True}))
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline and rover_state.last_cmd_buzzer is not True:
+            await asyncio.sleep(0.01)
+        assert rover_state.last_cmd_buzzer is True, "buzzer:true never reached the simulator"
+
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_b:
+            await _recv_snapshot(ws_b)
+            await _send_hello(ws_b)
+
+            await ws_a.close()
+            snap_b = await _recv_latest_snapshot(ws_b)
+            assert snap_b["controller_present"] is False
+
+            await ws_b.send(json.dumps({"type": "take_control"}))
+            snap_b2 = await _recv_latest_snapshot(ws_b)
+            assert snap_b2["in_control"] is True
+
+            # the next CmdMsg the simulator actually receives must carry
+            # buzzer=False -- not just last_ui_cmd being reset in-process.
+            deadline = time.monotonic() + TIMEOUT
+            while time.monotonic() < deadline and rover_state.last_cmd_buzzer is not False:
+                await asyncio.sleep(0.01)
+            assert rover_state.last_cmd_buzzer is False, (
+                "buzzer stayed on (or unknown) in the first CmdMsg the "
+                "simulator received after take_control"
+            )
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
 async def test_no_auto_promotion_on_controller_disconnect():
     sim_server, sim_port = await _start_simulator()
     app_server, serve_task, app_port = await _start_app(sim_port)

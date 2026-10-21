@@ -150,6 +150,7 @@ class RoverState:
     # used to detect two writers' frames interleaving on the wire (F13/F20).
     malformed_frame_count: int = 0
     accepted_cmd_count: int = 0
+    last_cmd_buzzer: Optional[bool] = None
 
     # watchdog (docs/02 §5.1): an event-loop timer armed/re-armed on every
     # accepted CmdMsg, not a poll inside tick() -- rover_main's own watchdog
@@ -352,6 +353,7 @@ class RoverState:
         """docs/02 §6.8 ack rules; §5.2 estop latch; §5 4b modes (Q-5)."""
         self.last_cmd_mono = time.monotonic()
         self.accepted_cmd_count += 1
+        self.last_cmd_buzzer = cmd.buzzer  # tests only (F1)
         self._arm_watchdog(asyncio.get_running_loop(), cmd_received=True)
 
         cmd_flags = (
