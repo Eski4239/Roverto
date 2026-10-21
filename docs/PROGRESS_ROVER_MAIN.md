@@ -145,6 +145,12 @@ rover_main plan (each step is flashed and tested on its own before the next):
 
 ## 5. Session log (newest first)
 
+### 2026-10-22 — GS side: Phase 5 + 5b merged
+- Command heartbeat is single-path (10 Hz, never resends stale commands).
+- E-STOP sent immediately; `estop_reset` only accepted from the controlling tab.
+- Reconnecting tabs return as viewers.
+- Next GS: Phase 6 controls, then Phase 10 ground_bridge (needed for R3).
+
 ### 2026-10-21 — GS Phase 5 fixes (Pablo + Claude)
 - GS side finished Phase 5 (environment/rover health panels + fixes from `wip/phase-5-panels`):
   topbar mode indicator, `env.alt_m` in the environment panel, sparkline downsampling/min-span,
