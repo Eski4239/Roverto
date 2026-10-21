@@ -221,8 +221,8 @@ def test_snapshot_history_and_session_minmax_track_env_values():
     assert snap["history"]["soc_pct"] == [(500, 80.0), (600, 79.0), (700, 81.0)]
     assert snap["history"]["alt_m"] == [(500, 1.0), (600, 1.5), (700, 0.8)]
     assert snap["history"]["vbat_v"] == [(500, 12.0), (600, 11.9), (700, 12.1)]
-    assert snap["session_minmax"]["temp_c"] == [18.0, 25.0]
-    assert snap["session_minmax"]["alt_m"] == [0.8, 1.5]
+    assert snap["session_minmax"]["temp_c"] == [18.0, 25.0, (20.0 + 25.0 + 18.0) / 3]
+    assert snap["session_minmax"]["alt_m"] == [0.8, 1.5, (1.0 + 1.5 + 0.8) / 3]
 
 
 def test_session_minmax_survives_past_ring_window_while_ring_trims():
@@ -236,7 +236,48 @@ def test_session_minmax_survives_past_ring_window_while_ring_trims():
     snap = state.snapshot(now_wall_ms=far_future_t_ms + 10.0, connected=True, serial_port="COM5")
 
     assert snap["history"]["temp_c"] == [(far_future_t_ms, 22.0)]
-    assert snap["session_minmax"]["temp_c"] == [5.0, 22.0]
+    assert snap["session_minmax"]["temp_c"] == [5.0, 22.0, (5.0 + 22.0) / 2]
+
+
+def test_chart_history_survives_rover_restart_without_gap_or_zigzag():
+    """Phase 5b expandable-tile charts (GET /api/history) are keyed by the
+    GS's own receive wall-clock, not the rover's t_ms -- t_ms resets to 0 on
+    every rover reboot (D-015), which would otherwise gap or zig-zag the
+    ring. Fill a ring pre-restart, simulate a restart (t_ms back to 0), keep
+    filling post-restart, and check the combined series is still in strictly
+    increasing time order covering the full window with no gap."""
+    state = GroundState()
+    recv_ms = 0.0
+    t_ms = 0
+    seq = 0
+    # Pre-restart: 10 s of samples 1 s apart, well past HISTORY_SAMPLE_PERIOD_MS.
+    for _ in range(10):
+        state.ingest(_telem(seq, t=t_ms), rssi=-55, recv_wall_ms=recv_ms)
+        recv_ms += 1000.0
+        t_ms += 1000
+        seq += 1
+
+    # Rover reboots: t_ms drops back near 0, seq resets too, but the GS's
+    # own receive clock keeps climbing -- this is what must keep the ring sane.
+    t_ms = 0
+    seq = 0
+    for _ in range(10):
+        state.ingest(_telem(seq, t=t_ms), rssi=-55, recv_wall_ms=recv_ms)
+        recv_ms += 1000.0
+        t_ms += 1000
+        seq += 1
+
+    series = state.chart_history("sys.loop_hz")
+    assert len(series) >= 15  # both halves present, nothing collapsed to one sample
+    times = [t for t, _ in series]
+    assert times == sorted(times)  # strictly increasing -- no zig-zag
+    assert all(b - a > 0 for a, b in zip(times, times[1:]))  # no duplicate/zero-gap entries
+
+    resp_t = [t for t, _ in series]
+    cutoff_ms = resp_t[-1] - 300 * 1000
+    windowed = [t for t in resp_t if t >= cutoff_ms]
+    assert windowed == sorted(windowed)
+    assert windowed[-1] - windowed[0] <= 300 * 1000 + 1000  # /api/history's own window slice stays sane
 
 
 def test_restart_detected_from_backward_t_ms_at_30s_uptime():

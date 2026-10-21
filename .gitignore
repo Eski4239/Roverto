@@ -16,3 +16,5 @@ Thumbs.db
 # Build artifacts
 golden_gen
 golden_gen.exe
+# Playwright layout test screenshots
+tests/screenshots/

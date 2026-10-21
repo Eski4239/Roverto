@@ -1,7 +1,8 @@
-// Rover Health -> Motors sub-widget: cmd (pwm) vs rpm bars, L/R.
-// docs/06 D-013: pwm_l/pwm_r on the wire peak at ±pwm_max, not ±255 -- bars
-// must scale to pwmMax, fetched once from GET /config.
+// Motors card (docs/03b §4): applied-PWM bars centered on 0, scale
+// ±pwm_max (D-013), plus rpm. Mounted once per preset that shows it
+// (Systems, Drive) -- each mount is its own instance, same class.
 import { renderField } from "./hwstate.js";
+import { ExpandableTile } from "./expandable.js";
 
 const MOTORS = [
   { key: "l", label: "L" },
@@ -9,27 +10,42 @@ const MOTORS = [
 ];
 
 export class MotorWidget {
-  constructor(root, pwmMax) {
+  constructor(root, pwmMax, expandSlotEl) {
     this.root = root;
     this.pwmMax = pwmMax || 255;
     // No documented max RPM; simulator models rpm ~= pwm * 0.5 (fake_rover.py),
     // so scale the rpm bar off the same pwmMax rather than a separate constant.
     this.rpmMax = this.pwmMax * 0.5;
-    this.root.innerHTML = MOTORS.map(
-      (m) => `
-        <div class="motor-row">
-          <span class="k">${m.label}</span>
-          <div class="motor-bar">
-            <span class="motor-bar-fill cmd" id="motor-${m.key}-cmd-fill"></span>
+    this.root.innerHTML = `
+      <section class="card motor-card">
+        <h2>MOTORS</h2>
+        ${MOTORS.map((m) => `
+          <div class="motor-row" id="motor-row-${m.key}">
+            ${expandSlotEl ? `<button class="expand-btn" aria-label="Expand ${m.label} motor chart">&#x2922;</button>` : ""}
+            <span class="k">${m.label}</span>
+            <div class="motor-bar"><span class="motor-bar-fill cmd" id="motor-${m.key}-cmd-fill"></span></div>
+            <span class="v" id="motor-${m.key}-cmd-value"></span>
+            <div class="motor-bar"><span class="motor-bar-fill rpm" id="motor-${m.key}-rpm-fill"></span></div>
+            <span class="v" id="motor-${m.key}-rpm-value"></span>
           </div>
-          <span class="v" id="motor-${m.key}-cmd-value"></span>
-          <div class="motor-bar">
-            <span class="motor-bar-fill rpm" id="motor-${m.key}-rpm-fill"></span>
-          </div>
-          <span class="v" id="motor-${m.key}-rpm-value"></span>
-        </div>
-      `,
-    ).join("");
+        `).join("")}
+      </section>
+    `;
+    this._expandables = {};
+    if (expandSlotEl) {
+      for (const m of MOTORS) {
+        const tile = new ExpandableTile({
+          slotEl: expandSlotEl,
+          tileKey: `pwm_${m.key}`,
+          label: `Motor ${m.label} PWM`,
+          unit: "",
+          formatValue: (v) => v.toFixed(0),
+          field: `mot.pwm_${m.key}`,
+        });
+        tile.attach(document.getElementById(`motor-row-${m.key}`));
+        this._expandables[m.key] = tile;
+      }
+    }
   }
 
   render(snapshot) {
@@ -60,6 +76,8 @@ export class MotorWidget {
       });
       this._setFill(`motor-${m.key}-rpm-fill`, rpm, encodersPresent ? this.rpmMax : null);
       this._setText(`motor-${m.key}-rpm-value`, rpmField.text, rpmField.cls);
+
+      if (this._expandables[m.key]) this._expandables[m.key].renderIfOpen(snapshot);
     }
   }
 

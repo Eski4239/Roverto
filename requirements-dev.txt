@@ -1,0 +1,5 @@
+# Dev-only tooling, never installed in production. Not part of
+# ground_station/requirements.txt (CLAUDE.md "Dependency reminder" is about
+# that file only; this one has its own install step, see tests/test_layout_playwright.py).
+playwright
+pytest-playwright

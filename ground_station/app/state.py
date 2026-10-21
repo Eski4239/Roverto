@@ -98,6 +98,20 @@ class RingBuffer:
         return list(self._samples)
 
 
+# Fields chartable in the Phase 5b expandable-tile UI, in addition to the
+# env/power fields already ringed on GroundState (temp_c, hum_pct,
+# press_hpa, alt_m, lux, soc_pct, vbat_v). Sampled at 1 Hz (not every 10 Hz
+# TELEM) since a 220px chart gains nothing from denser samples and this
+# keeps the ring's memory bounded regardless of TELEM rate.
+HISTORY_SAMPLE_PERIOD_MS = 1000
+CHARTABLE_FIELDS = (
+    "link.loss_pct", "link.rtt_ms", "link.rssi_rover_dbm", "link.rssi_bridge_dbm",
+    "imu.roll_deg", "imu.pitch_deg",
+    "mot.pwm_l", "mot.pwm_r", "mot.rpm_l", "mot.rpm_r",
+    "sys.loop_hz",
+)
+
+
 class LinkTracker:
     """Derives the docs/02 §3.2 `link` block from observed traffic."""
 
@@ -300,10 +314,19 @@ class GroundState:
         self.ring_soc_pct = RingBuffer()
         self.ring_vbat_v = RingBuffer()
 
-        # Session min/max (docs/03 §2 "min/max of session") -- unlike the
-        # ring buffers above, these never trim: they must survive past the
-        # 5-minute window for as long as this GroundState lives.
-        self._session_minmax: dict[str, tuple[float, float]] = {}
+        # Phase 5b expandable tiles (link/imu/motor/sys fields) -- kept
+        # out of the 10 Hz WS snapshot, served on demand via GET
+        # /api/history so an un-expanded tile costs nothing per tick.
+        self._chart_rings: dict[str, RingBuffer] = {
+            field: RingBuffer() for field in CHARTABLE_FIELDS
+        }
+        self._last_chart_sample_ms: Optional[int] = None
+
+        # Session min/max/mean (docs/03 §2 "min/max of session") -- unlike
+        # the ring buffers above, these never trim: they must survive past
+        # the 5-minute window for as long as this GroundState lives.
+        # (min, max, sum, count) -- mean is sum/count, computed on read.
+        self._session_minmax: dict[str, tuple[float, float, float, int]] = {}
 
         self._last_t_ms: Optional[int] = None
         self._newest_post_restart_t_ms: Optional[int] = None
@@ -388,8 +411,42 @@ class GroundState:
     def _update_session_minmax(self, field: str, value: Optional[float]) -> None:
         if value is None:
             return
-        lo, hi = self._session_minmax.get(field, (value, value))
-        self._session_minmax[field] = (min(lo, value), max(hi, value))
+        lo, hi, total, count = self._session_minmax.get(field, (value, value, 0.0, 0))
+        self._session_minmax[field] = (min(lo, value), max(hi, value), total + value, count + 1)
+
+    def _update_chart_rings(self, recv_wall_ms: float, telem: TelemMsg, link_block: LinkBlock) -> None:
+        """Sample the Phase 5b chartable fields at 1 Hz (not every TELEM).
+
+        Keyed by the GS's own receive wall-clock, not the rover's t_ms: t_ms
+        resets to 0 on every rover reboot (D-015), which would zig-zag or gap
+        a ring keyed by it. recv_wall_ms only ever increases, restart or not.
+        """
+        if (
+            self._last_chart_sample_ms is not None
+            and recv_wall_ms - self._last_chart_sample_ms < HISTORY_SAMPLE_PERIOD_MS
+        ):
+            return
+        self._last_chart_sample_ms = recv_wall_ms
+        values = {
+            "link.loss_pct": link_block.loss_pct,
+            "link.rtt_ms": link_block.rtt_ms,
+            "link.rssi_rover_dbm": link_block.rssi_rover_dbm,
+            "link.rssi_bridge_dbm": link_block.rssi_bridge_dbm,
+            "imu.roll_deg": telem.imu.roll_deg,
+            "imu.pitch_deg": telem.imu.pitch_deg,
+            "mot.pwm_l": telem.mot.pwm_l,
+            "mot.pwm_r": telem.mot.pwm_r,
+            "mot.rpm_l": telem.mot.rpm_l,
+            "mot.rpm_r": telem.mot.rpm_r,
+            "sys.loop_hz": telem.sys.loop_hz,
+        }
+        for field, value in values.items():
+            self._chart_rings[field].append(int(recv_wall_ms), value)
+
+    def chart_history(self, field: str) -> list[tuple[int, float]]:
+        """Values for one CHARTABLE_FIELDS entry; [] if the field is unknown."""
+        ring = self._chart_rings.get(field)
+        return ring.values() if ring is not None else []
 
     def needs_hello_request(self) -> bool:
         return self._awaiting_hello_request
@@ -424,6 +481,10 @@ class GroundState:
             self._update_session_minmax("press_hpa", msg.env.press_hpa)
             self._update_session_minmax("alt_m", msg.env.alt_m)
             self._update_session_minmax("lux", msg.light.lux)
+            self._update_chart_rings(
+                recv_wall_ms, msg,
+                self.link.to_block(now_wall_ms=recv_wall_ms, connected=True, serial_port=None),
+            )
         elif isinstance(msg, EventMsg):
             if not self._check_restart(
                 msg.t, msg.seq, recv_wall_ms, is_hello=False, hello_seq=None,
@@ -496,7 +557,8 @@ class GroundState:
                 "vbat_v": self.ring_vbat_v.values(),
             },
             "session_minmax": {
-                field: list(bounds) for field, bounds in self._session_minmax.items()
+                field: [lo, hi, total / count]
+                for field, (lo, hi, total, count) in self._session_minmax.items()
             },
             "link": self.link.to_block(
                 now_wall_ms=now_wall_ms, connected=connected, serial_port=serial_port,

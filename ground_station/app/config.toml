@@ -38,3 +38,13 @@ red_above = 500
 [thresholds.chip_temp_c]
 green_below = 60
 red_above = 75
+
+# Agreed on the top bar (03b layout review, 2026-10-21).
+[thresholds.loss_pct]
+green_below = 2
+red_above = 10
+
+# docs/04_FUTURE_HARDWARE.md §F: below 80 Hz loop rate is a problem.
+[thresholds.loop_hz]
+green_above = 90
+red_below = 80

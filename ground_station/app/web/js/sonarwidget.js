@@ -1,9 +1,8 @@
-// Rover Health -> Sonar sub-widget: distance readout + mini radar (angle +
-// distance, docs/03). docs/02: dist_cm null = "no echo" (nodata, not absent).
-// Thresholds: dist_cm green>50, red<20.
-import { renderField, thresholdClass } from "./hwstate.js";
+// Science preset -- small Sonar card: front distance + mini sweep
+// (docs/03b §4). docs/02: dist_cm null = "no echo" (nodata, not absent).
+import { renderField } from "./hwstate.js";
+import { thresholdClassFor } from "./thresholds.js";
 
-const THRESHOLDS_DIST = { greenAbove: 50, redBelow: 20 };
 const MAX_RANGE_CM = 200;
 const REDRAW_PERIOD_MS = 500; // 2 Hz
 
@@ -11,13 +10,16 @@ export class SonarWidget {
   constructor(root) {
     this.root = root;
     this.root.innerHTML = `
-      <div class="sonar-widget">
-        <svg class="sonar-radar" viewBox="0 0 100 55">
-          <path d="M 2 52 A 48 48 0 0 1 98 52" fill="none" stroke="var(--panel-border)" />
-          <line id="sonar-radar-line" x1="50" y1="52" x2="50" y2="52" stroke="currentColor" stroke-width="2" />
-        </svg>
-        <div class="v" id="sonar-dist"></div>
-      </div>
+      <section class="card sonar-card">
+        <h2>SONAR · FRONT</h2>
+        <div class="sonar-widget">
+          <div class="tile-value" id="sonar-dist"></div>
+          <svg class="sonar-radar" viewBox="0 0 100 55">
+            <path d="M 2 52 A 48 48 0 0 1 98 52" fill="none" stroke="var(--border)" />
+            <line id="sonar-radar-line" x1="50" y1="52" x2="50" y2="52" stroke="currentColor" stroke-width="2" />
+          </svg>
+        </div>
+      </section>
     `;
     this._lastDrawWallMs = -Infinity;
   }
@@ -39,7 +41,7 @@ export class SonarWidget {
     const distEl = document.getElementById("sonar-dist");
     if (distEl) {
       distEl.textContent = field.text;
-      distEl.className = `v ${field.cls || thresholdClass(sonar.dist_cm, THRESHOLDS_DIST)}`;
+      distEl.className = `tile-value ${field.cls || thresholdClassFor("sonar_dist_cm", sonar.dist_cm)}`;
     }
 
     if (nowWallMs - this._lastDrawWallMs < REDRAW_PERIOD_MS) return;

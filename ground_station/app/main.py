@@ -192,7 +192,26 @@ def create_app(args: argparse.Namespace) -> FastAPI:
 
     @app.get("/config")
     async def get_config() -> dict:
-        return {"pwm_max": config["motors"]["pwm_max"]}
+        return {
+            "pwm_max": config["motors"]["pwm_max"],
+            "thresholds": config.get("thresholds", {}),
+        }
+
+    @app.get("/api/history")
+    async def api_history(field: str, window: int = 300) -> dict:
+        """Phase 5b expandable tiles: on-demand series for a chartable field
+        (state.CHARTABLE_FIELDS), polled at 1 Hz only while a tile is open --
+        kept out of the 10 Hz WS snapshot so an unopened tile costs nothing.
+
+        `t` values are the GS's own receive wall-clock in ms, not the
+        rover's t_ms (which resets to 0 on every rover reboot, D-015) --
+        `window` slices relative to the newest sample, not now().
+        """
+        samples = state.chart_history(field)
+        if samples:
+            cutoff_ms = samples[-1][0] - window * 1000
+            samples = [(t, v) for (t, v) in samples if t >= cutoff_ms]
+        return {"t": [t for t, _ in samples], "v": [v for _, v in samples]}
 
     @app.websocket("/ws/ui")
     async def ws_ui(ws: WebSocket) -> None:
