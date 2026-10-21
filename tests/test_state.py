@@ -416,3 +416,58 @@ def test_hello_seq_zero_first_message_ever_is_not_a_restart():
     codes = [e.code for e in state.events]
     assert "ROVER_RESTART" not in codes
     assert state.needs_hello_request() is False
+
+
+def test_f4_seq_jump_fallback_alone_still_runs_restart_side_effects():
+    """F4: LinkTracker.on_rover_seq's own seq-jump fallback (independent of
+    _check_restart's t_ms/HELLO-seq-0 detection) could fire by itself
+    when t_ms stays within RESTART_T_MS_TOLERANCE but seq jumps backward
+    by >= RESTART_BACKWARD_JUMP -- previously this reset LinkTracker's
+    loss/seq tracking silently, without GroundState ever logging
+    ROVER_RESTART, resetting the scan reassembler, or updating
+    hello-tracking. Craft exactly that: t_ms advances normally (no t_ms-
+    based restart), seq jumps back by 1200 (>= RESTART_BACKWARD_JUMP)."""
+    state = GroundState()
+    state.ingest(_telem(5000, t=10_000), rssi=-55, recv_wall_ms=1000.0)
+    assert [e.code for e in state.events] == []  # sanity: no restart yet
+
+    # t_ms advances normally (well within tolerance of the prior message),
+    # but seq jumps backward by 1200 -- only the fallback can catch this.
+    state.ingest(_telem(3800, t=10_100), rssi=-55, recv_wall_ms=1100.0)
+
+    codes = [e.code for e in state.events]
+    assert "ROVER_RESTART" in codes, (
+        "seq-jump-only restart must still be reported by GroundState, not "
+        "just silently absorbed by LinkTracker's own reset"
+    )
+
+
+def test_f5_scan_fragment_passes_real_recv_wall_ms_to_on_rover_seq():
+    """F5: ingest_scan_fragment's on_rover_seq call previously omitted
+    recv_wall_ms, defaulting to time.time() instead of the caller-supplied
+    now_ms -- inconsistent with every other ingest() call site. Confirm
+    the scan fragment's seq is recorded under the now_ms-derived
+    timestamp, not a wall-clock one that could diverge from it: feed a
+    seq via a scan fragment at a now_ms far in the "past" relative to
+    real wall-clock, then check loss_pct's window (keyed off recv_wall_ms)
+    reflects that supplied time, not time.time()."""
+    from ground_station.app.protocol import ScanMsg, ScanPose
+
+    state = GroundState()
+    scan = ScanMsg(
+        t=500, seq=42, src="sonar", scan_id=1, pose=ScanPose(), pts=[[0.0, 100.0]],
+    )
+    # now_ms is in GS-monotonic-ish space, deliberately not close to
+    # time.time()*1000 -- if on_rover_seq silently used time.time()
+    # instead, the recorded sample's recv_wall_ms would land far outside
+    # this now_ms-based window check below.
+    now_ms = 2_000_000_000  # an arbitrary, real-world-wall-clock-distinct value
+    state.ingest_scan_fragment(scan, 1, 1, now_ms)
+
+    assert len(state.link._recent_rover_seqs) == 1
+    recorded_wall_ms, recorded_seq = state.link._recent_rover_seqs[0]
+    assert recorded_seq == 42
+    assert recorded_wall_ms == float(now_ms), (
+        f"expected on_rover_seq to receive now_ms={now_ms} as recv_wall_ms, "
+        f"got {recorded_wall_ms} (likely defaulted to time.time() instead)"
+    )

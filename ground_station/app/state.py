@@ -141,9 +141,16 @@ class LinkTracker:
         self._pending_cmd_sent_ms.clear()
         self._rtt_ms = None
 
-    def on_rover_seq(self, seq: int, *, recv_wall_ms: Optional[float] = None) -> None:
+    def on_rover_seq(self, seq: int, *, recv_wall_ms: Optional[float] = None) -> bool:
         """Feed every rover->GS message's seq (docs/02 §1: one counter per
         sender, shared across hello/telem/scan/event/ack) for loss_pct.
+        Returns True if this call detected a restart via the seq-jump
+        fallback below -- the caller (GroundState._check_restart's own
+        t_ms/HELLO-seq-0 detection runs first on every path; this is only a
+        fallback for the rare case that detection misses) must also run its
+        own restart side-effects (event log, scan reassembler reset,
+        hello-tracking) when this returns True, so the two detectors can't
+        silently disagree about whether a restart happened (F4).
 
         Messages built on different code paths (e.g. an ack built while
         handling an inbound cmd vs. telem built in the main tick) can be
@@ -167,6 +174,7 @@ class LinkTracker:
         if recv_wall_ms is None:
             recv_wall_ms = time.time() * 1000.0
 
+        detected_restart = False
         if self._highest_rover_seq is not None:
             rel = ((seq - self._highest_rover_seq + 32768) % 65536) - 32768
             if rel < 0 and -rel >= RESTART_BACKWARD_JUMP:
@@ -175,6 +183,7 @@ class LinkTracker:
                     self._highest_rover_seq, seq,
                 )
                 self._reset_seq_tracking()
+                detected_restart = True
 
         self._recent_rover_seqs.append((recv_wall_ms, seq))
         cutoff = recv_wall_ms - LOSS_WINDOW_MS
@@ -187,6 +196,8 @@ class LinkTracker:
             rel = ((seq - self._highest_rover_seq + 32768) % 65536) - 32768
             if rel > 0:
                 self._highest_rover_seq = seq
+
+        return detected_restart
 
     def on_telem(self, msg: TelemMsg, *, recv_wall_ms: float, rssi: Optional[int]) -> None:
         self._last_telem_recv_ms = recv_wall_ms
@@ -342,6 +353,30 @@ class GroundState:
         # reset it -- only restarting the ground station itself does.
         self.mission_start_wall_ms: Optional[float] = None
 
+    def _apply_restart_side_effects(
+        self, t_ms: int, seq: int, recv_wall_ms: float,
+        *, is_hello: bool, reset_link: bool,
+    ) -> None:
+        """Shared by both restart detectors (F4): _check_restart's own
+        t_ms/HELLO-seq-0 check below, and LinkTracker.on_rover_seq's
+        seq-jump fallback (called with reset_link=False, since LinkTracker
+        has already reset its own state internally by the time it reports
+        back -- calling link.reset() again here would be redundant, not
+        wrong, but reset_link keeps the intent explicit at each call site)."""
+        if reset_link:
+            self.link.reset()
+        self._scan_reassembler.reset()
+        reason = self.hello.reset_reason if (is_hello and self.hello) else "pending"
+        self.events.append(EventMsg(
+            t=t_ms, seq=0, level="warn", code="ROVER_RESTART",
+            msg=f"rover restart detected (reset_reason={reason})",
+        ))
+        self._hello_seen_since_restart = is_hello
+        self._awaiting_hello_request = not is_hello
+        self._newest_post_restart_t_ms = t_ms
+        self._newest_post_restart_seq = seq
+        self._restart_detected_wall_ms = recv_wall_ms
+
     def _check_restart(
         self, t_ms: int, seq: int, recv_wall_ms: float,
         *, is_hello: bool, hello_seq: Optional[int],
@@ -380,18 +415,9 @@ class GroundState:
                 restarted = True
 
         if restarted:
-            self.link.reset()
-            self._scan_reassembler.reset()
-            reason = self.hello.reset_reason if (is_hello and self.hello) else "pending"
-            self.events.append(EventMsg(
-                t=t_ms, seq=0, level="warn", code="ROVER_RESTART",
-                msg=f"rover restart detected (reset_reason={reason})",
-            ))
-            self._hello_seen_since_restart = is_hello
-            self._awaiting_hello_request = not is_hello
-            self._newest_post_restart_t_ms = t_ms
-            self._newest_post_restart_seq = seq
-            self._restart_detected_wall_ms = recv_wall_ms
+            self._apply_restart_side_effects(
+                t_ms, seq, recv_wall_ms, is_hello=is_hello, reset_link=True,
+            )
         elif is_hello:
             self._hello_seen_since_restart = True
             self._awaiting_hello_request = False
@@ -452,6 +478,17 @@ class GroundState:
     def needs_hello_request(self) -> bool:
         return self._awaiting_hello_request
 
+    def _feed_rover_seq(self, seq: int, t_ms: int, recv_wall_ms: float, *, is_hello: bool) -> None:
+        """Wraps LinkTracker.on_rover_seq so its seq-jump-fallback restart
+        detection (returns True) also runs GroundState's own restart
+        side-effects (F4) -- without this, a restart caught only by that
+        fallback would reset LinkTracker's loss/seq state but leave the
+        event log, scan reassembler and hello-tracking stale."""
+        if self.link.on_rover_seq(seq, recv_wall_ms=recv_wall_ms):
+            self._apply_restart_side_effects(
+                t_ms, seq, recv_wall_ms, is_hello=is_hello, reset_link=False,
+            )
+
     def ingest(self, msg, *, rssi: Optional[int], recv_wall_ms: float) -> None:
         if isinstance(msg, HelloMsg):
             if not self._check_restart(
@@ -459,7 +496,7 @@ class GroundState:
             ):
                 return
             self.hello = msg
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=True)
         elif isinstance(msg, TelemMsg):
             if not self._check_restart(
                 msg.t, msg.seq, recv_wall_ms, is_hello=False, hello_seq=None,
@@ -468,7 +505,7 @@ class GroundState:
             if self.mission_start_wall_ms is None:
                 self.mission_start_wall_ms = recv_wall_ms
             self.telem = msg
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=False)
             self.link.on_telem(msg, recv_wall_ms=recv_wall_ms, rssi=rssi)
             self.ring_temp_c.append(msg.t, msg.env.temp_c)
             self.ring_hum_pct.append(msg.t, msg.env.hum_pct)
@@ -492,23 +529,29 @@ class GroundState:
             ):
                 return
             self.events.append(msg)
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=False)
         elif isinstance(msg, AckMsg):
             if not self._check_restart(
                 msg.t, msg.seq, recv_wall_ms, is_hello=False, hello_seq=None,
             ):
                 return
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=False)
             self.link.on_ack(msg, recv_wall_ms=recv_wall_ms)
         elif isinstance(msg, wire.BridgeStatus):
             self.link.on_bridge_status(msg)
 
     def ingest_scan_fragment(self, scan: ScanMsg, part: int, parts: int, now_ms: int) -> None:
+        recv_wall_ms = float(now_ms)
         if not self._check_restart(
-            scan.t, scan.seq, float(now_ms), is_hello=False, hello_seq=None,
+            scan.t, scan.seq, recv_wall_ms, is_hello=False, hello_seq=None,
         ):
             return
-        self.link.on_rover_seq(scan.seq)
+        # F5: pass recv_wall_ms through like every other call site above --
+        # previously on_rover_seq() defaulted it to time.time() here, which
+        # could diverge from the now_ms the caller (and _check_restart just
+        # above) actually used, skewing this one message's loss-window
+        # timing against a test/mock clock.
+        self._feed_rover_seq(scan.seq, scan.t, recv_wall_ms, is_hello=False)
         completed = self._scan_reassembler.add_fragment(scan, part, parts, now_ms)
         if completed is not None:
             self.scan = completed
