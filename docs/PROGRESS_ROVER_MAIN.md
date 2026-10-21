@@ -14,6 +14,36 @@ How to use this file
 
 ---
 
+## 0. Current focus (update at the end of every session)
+
+**Now:** R0 — Victor installing PlatformIO in VS Code. USB driver done.
+**R0 test project** (outside the repo, e.g. `C:\dev\mac_test`) to validate the pioarduino toolchain
+and read each board's MAC:
+```ini
+[env:esp32]
+platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip
+board = esp32doit-devkit-v1
+framework = arduino
+monitor_speed = 115200
+```
+```cpp
+#include <WiFi.h>
+void setup() { Serial.begin(115200); WiFi.mode(WIFI_STA); }
+void loop()  { Serial.println(WiFi.macAddress()); delay(1000); }
+```
+**Board MACs** (WiFi STA MAC; boards physically labelled):
+
+| Board | Role | MAC |
+|-------|------|-----|
+| ESP32 #1 | rover_main | _pending_ |
+| ESP32 #2 | ground_bridge | _pending_ |
+
+**Next:** fill in the MACs → R1 skeleton of `firmware/rover_main`.
+**Safety/mode behaviour source of truth:** docs/02 §5 (Q-3/Q-4/Q-5 agreed); D-014 is superseded.
+
+**Session ritual for any agent working on rover_main:** at start `git pull`; at the end update §0,
+§2 status and §5 session log, commit and push.
+
 ## 1. Ownership
 
 | Area | Owner | Notes |
@@ -67,7 +97,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | D-011 | `chip_temp_c` from `temperatureRead()` is unreliable on many classic ESP32s (often a constant). Sent as-is; GS should treat it as indicative only. | **AGREED** 2026-10-20 | ⚠ don't alarm hard on it |
 | D-012 | **Simulator parity for CmdMsg handling** (mirror `fake_rover.py` `apply_cmd`): ack rule (a) is not evaluated on the first CmdMsg after boot (no previous to compare); if one CmdMsg carries both `estop` and `estop_reset`, reset wins (latch released); servo and mode are applied even while E-STOP is latched, drive is not. | **AGREED** 2026-10-20 | none (matches sim) |
 | D-013 | **Motors provisional: Arduino-kit TT gear motors (3–6 V).** `PWM_MAX` is a constant in `config.h`; until the TB6612 VM supply is confirmed, default **PWM_MAX = 120** (≈6 V average from a 12.6 V battery). `drive = ±1.0` maps to ±PWM_MAX. Re-tune when the final motors are chosen. | **AGREED** 2026-10-20 | ⚠ `pwm_l/r` on the wire peak at ±PWM_MAX, not ±255 |
-| D-014 | **Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1). | **AGREED** 2026-10-20 | see GS-1 |
+| D-014 | ~~**Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1).~~ | **SUPERSEDED** 2026-10-20 by the agreed Q-3/Q-4/Q-5 now in docs/02 §5 (rules 3, 4, 4b). Firmware follows docs/02, not the simulator, where they differ | sim should follow docs/02 §5 (see GS-1) |
 | D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | **AGREED** 2026-10-20 (GS: Pablo) — details in GS-2 | ⚠ GS detects a reboot by `t_ms` going backwards (GS-2) |
 
 ## 4. Open questions (answer here, then turn into decisions)
