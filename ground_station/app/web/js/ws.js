@@ -36,4 +36,9 @@ export class UiSocket {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
     this._ws.send(JSON.stringify({ type: "cmd", ...partial }));
   }
+
+  takeControl() {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: "take_control" }));
+  }
 }

@@ -125,7 +125,6 @@ class RoverState:
     hello_requested: bool = True  # send HELLO immediately on boot
     wd_stop_sent: bool = False
     pending_events: list[EventMsg] = field(default_factory=list)
-    pending_acks: list[wire.AckMsg] = field(default_factory=list)
 
     # GS-1: edge-triggered events, emitted once per state change, not per tick.
     tilt_active: bool = False
@@ -191,10 +190,9 @@ class RoverState:
         self.drive_l = 0.0
         self.drive_r = 0.0
         # A real power-cycle can't have anything queued with a pre-reboot
-        # seq: drop pending acks/events built before the reboot, and any
-        # scan sweep in progress (its fragments share the old scan's seq).
+        # seq: drop pending events built before the reboot, and any scan
+        # sweep in progress (its fragments share the old scan's seq).
         self.pending_events.clear()
-        self.pending_acks.clear()
         self.scan_id = 0
 
     def is_silent(self) -> bool:
@@ -353,7 +351,6 @@ class RoverState:
                 self.last_cmd_rejected_event_mono = now
                 self._emit_event("warn", "CMD_REJECTED", "auto mode not implemented")
             ack = wire.AckMsg(t=self.now_ms(), seq=self.next_seq(), ack_seq=cmd.seq, ok=False)
-            self.pending_acks.append(ack)
             return ack
 
         drive_l = max(-1.0, min(1.0, cmd.drive.l))
@@ -395,13 +392,8 @@ class RoverState:
 
         if ack_rule_a or ack_rule_b:
             ack = wire.AckMsg(t=self.now_ms(), seq=self.next_seq(), ack_seq=cmd.seq, ok=True)
-            self.pending_acks.append(ack)
             return ack
         return None
-
-    def drain_pending_acks(self) -> list[wire.AckMsg]:
-        acks, self.pending_acks = self.pending_acks, []
-        return acks
 
     # ------------------------------------------------------------ build ----
 
@@ -538,7 +530,14 @@ def _send_frame(registry: _ClientRegistry, kind: int, rssi: int, payload: bytes,
         log.debug("send failed, client likely gone: %s", exc)
 
 
-async def _rx_loop(reader: asyncio.StreamReader, state: RoverState) -> None:
+async def _rx_loop(
+    reader: asyncio.StreamReader, state: RoverState,
+    registry: _ClientRegistry, args: argparse.Namespace,
+) -> None:
+    """Applies each incoming CmdMsg and, if it earns an ack (docs/02 §6.8),
+    writes it to the socket immediately -- real rover_main replies within
+    one ~10ms loop iteration, not on this simulator's own 100ms telemetry
+    tick, so RTT measurement shouldn't be stretched by that unrelated tick."""
     while True:
         try:
             raw = await reader.readuntil(b"\x00")
@@ -555,7 +554,9 @@ async def _rx_loop(reader: asyncio.StreamReader, state: RoverState) -> None:
         except Exception as exc:  # noqa: BLE001 — never crash on malformed input
             log.debug("dropping malformed frame: %s", exc)
             continue
-        state.apply_cmd(cmd)
+        ack = state.apply_cmd(cmd)
+        if ack is not None and not state.is_silent():
+            _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_ack(ack), args.lossy)
 
 
 async def handle_client(
@@ -563,6 +564,7 @@ async def handle_client(
     writer: asyncio.StreamWriter,
     state: RoverState,
     registry: _ClientRegistry,
+    args: argparse.Namespace,
 ) -> None:
     peer = writer.get_extra_info("peername")
     if registry.writer is not None:
@@ -582,7 +584,7 @@ async def handle_client(
         state.wd_stop_sent = False
     log.info("client connected: %s", peer)
     try:
-        await _rx_loop(reader, state)
+        await _rx_loop(reader, state, registry, args)
     except (ConnectionResetError, BrokenPipeError, OSError) as exc:
         log.info("client %s disconnected: %s", peer, exc)
     finally:
@@ -635,11 +637,10 @@ async def _driver_loop(state: RoverState, registry: _ClientRegistry, args: argpa
                 for frag in state.build_scan_fragments():
                     _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, frag, args.lossy)
 
-        pending_acks = state.drain_pending_acks()
+        # Acks are sent immediately in _rx_loop (docs/02 §6.8 RTT measurement
+        # shouldn't be stretched by this unrelated 100ms telemetry tick).
         pending_events = state.drain_pending_events()
         if not silent:
-            for ack in pending_acks:
-                _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_ack(ack), args.lossy)
             for ev in pending_events:
                 _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_event(ev), args.lossy)
 
@@ -706,7 +707,7 @@ async def run_server(args: argparse.Namespace) -> asyncio.base_events.Server:
     registry = _ClientRegistry()
 
     async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        await handle_client(reader, writer, state, registry)
+        await handle_client(reader, writer, state, registry, args)
 
     server = await asyncio.start_server(_handler, args.host, args.port)
     asyncio.create_task(_driver_loop(state, registry, args))

@@ -10,6 +10,8 @@ export class PowerWidget {
     this.root = root;
     this._sparkEl = null;
     this._spark = null;
+    this._vbatSparkEl = null;
+    this._vbatSpark = null;
   }
 
   render(snapshot, nowWallMs) {
@@ -46,18 +48,26 @@ export class PowerWidget {
     this.root.innerHTML = `
       <div class="power-widget">
         <div class="row"><span class="k">V</span><span class="${vbat.cls}">${vbat.text}</span></div>
+        <svg class="sparkline" id="power-vbat-spark"></svg>
         <div class="row"><span class="k">I</span><span class="${ibat.cls}">${ibat.text}</span></div>
         <div class="row"><span class="k">W</span><span class="${pwr.cls}">${pwr.text}</span></div>
         <div class="row"><span class="k">SoC</span><span class="${soc.cls}">${soc.text}</span></div>
         <svg class="sparkline" id="power-soc-spark"></svg>
       </div>
     `;
+    const vbatSparkEl = document.getElementById("power-vbat-spark");
+    if (vbatSparkEl !== this._vbatSparkEl) {
+      this._vbatSparkEl = vbatSparkEl;
+      this._vbatSpark = new Sparkline(vbatSparkEl);
+    }
     const sparkEl = document.getElementById("power-soc-spark");
     if (sparkEl !== this._sparkEl) {
       this._sparkEl = sparkEl;
       this._spark = new Sparkline(sparkEl);
     }
     const history = snapshot.history || {};
-    this._spark.render(history.soc_pct, nowWallMs ?? Date.now());
+    const now = nowWallMs ?? Date.now();
+    this._vbatSpark.render(history.vbat_v, now, 1);
+    this._spark.render(history.soc_pct, now, 10);
   }
 }

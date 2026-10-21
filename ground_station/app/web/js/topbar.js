@@ -30,6 +30,7 @@ export class TopBar {
     // or a rover reboot doesn't reset it -- only restarting the ground
     // station process does.
     this._text("tb-clock", this._missionClock(snapshot.mission_start_wall_ms, nowWallMs));
+    this._text("tb-mode", telem ? telem.state.mode.toUpperCase() : "—");
 
     this._renderBattery(telem, linkLost, nowWallMs);
 
@@ -38,6 +39,17 @@ export class TopBar {
 
     const noBridge = document.getElementById("no-bridge-banner");
     if (noBridge) noBridge.classList.toggle("visible", link.state === "NO_BRIDGE");
+
+    const viewOnlyLabel = document.getElementById("tb-view-only");
+    if (viewOnlyLabel) viewOnlyLabel.classList.toggle("visible", snapshot.in_control === false);
+
+    const takeControlBtn = document.getElementById("take-control-btn");
+    if (takeControlBtn) {
+      takeControlBtn.classList.toggle(
+        "visible",
+        snapshot.in_control === false && snapshot.controller_present === false,
+      );
+    }
   }
 
   _renderLinkDot(state) {

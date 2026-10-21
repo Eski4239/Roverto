@@ -14,6 +14,9 @@ and corrupted repos. Share code between teammates through GitHub instead.
 3. **Git** — https://git-scm.com
 4. **USB driver** for the ESP32 DevKit (CP210x or CH340, depending on the chip next to the USB port)
 5. A **paid Claude account** (Pro/Max/Team) — required for Claude Code. No API key needed.
+6. Optional: **Node.js** (LTS) — https://nodejs.org — only needed to run the frontend JS test
+   suite (`node --test tests_js`), not to run the ground station itself. `pytest -q` skips those
+   tests with a message if Node isn't installed.
 
 ## Step 2 — VS Code extensions
 Open Extensions (`Ctrl+Shift+X`) and install:

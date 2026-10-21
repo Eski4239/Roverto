@@ -288,7 +288,7 @@ async def _start_simulator_with_registry(port: int = 0):
     registry = _ClientRegistry()
 
     async def _handler(reader, writer):
-        await handle_client(reader, writer, state, registry)
+        await handle_client(reader, writer, state, registry, args)
 
     server = await asyncio.start_server(_handler, args.host, args.port)
     asyncio.create_task(_driver_loop(state, registry, args))

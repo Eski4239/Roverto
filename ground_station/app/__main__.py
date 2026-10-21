@@ -32,7 +32,7 @@ def main() -> None:
     if args.replay is not None:
         raise NotImplementedError("--replay is implemented in Phase 7 (docs/06)")
     app = create_app(args)
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=2)
 
 
 if __name__ == "__main__":

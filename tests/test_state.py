@@ -23,10 +23,16 @@ def _telem(seq: int, t: int = 0) -> TelemMsg:
     )
 
 
-def _telem_env(seq: int, t: int, *, temp_c: Optional[float] = None, soc_pct: Optional[float] = None) -> TelemMsg:
+def _telem_env(
+    seq: int, t: int, *,
+    temp_c: Optional[float] = None, soc_pct: Optional[float] = None,
+    alt_m: Optional[float] = None, vbat_v: Optional[float] = None,
+) -> TelemMsg:
     msg = _telem(seq, t)
     msg.env.temp_c = temp_c
+    msg.env.alt_m = alt_m
     msg.pwr.soc_pct = soc_pct
+    msg.pwr.vbat_v = vbat_v
     return msg
 
 
@@ -192,18 +198,31 @@ def test_ground_state_ingest_telem_updates_snapshot():
     assert snap["telem"]["seq"] == 1
     assert snap["link"]["state"] == "OK"
     assert snap["link"]["rssi_rover_dbm"] == -60
+    assert snap["telem"]["state"]["mode"] == "idle"
 
 
 def test_snapshot_history_and_session_minmax_track_env_values():
     state = GroundState()
-    state.ingest(_telem_env(1, t=500, temp_c=20.0, soc_pct=80.0), rssi=-55, recv_wall_ms=1000.0)
-    state.ingest(_telem_env(2, t=600, temp_c=25.0, soc_pct=79.0), rssi=-55, recv_wall_ms=1100.0)
-    state.ingest(_telem_env(3, t=700, temp_c=18.0, soc_pct=81.0), rssi=-55, recv_wall_ms=1200.0)
+    state.ingest(
+        _telem_env(1, t=500, temp_c=20.0, soc_pct=80.0, alt_m=1.0, vbat_v=12.0),
+        rssi=-55, recv_wall_ms=1000.0,
+    )
+    state.ingest(
+        _telem_env(2, t=600, temp_c=25.0, soc_pct=79.0, alt_m=1.5, vbat_v=11.9),
+        rssi=-55, recv_wall_ms=1100.0,
+    )
+    state.ingest(
+        _telem_env(3, t=700, temp_c=18.0, soc_pct=81.0, alt_m=0.8, vbat_v=12.1),
+        rssi=-55, recv_wall_ms=1200.0,
+    )
     snap = state.snapshot(now_wall_ms=1300.0, connected=True, serial_port="COM5")
 
     assert snap["history"]["temp_c"] == [(500, 20.0), (600, 25.0), (700, 18.0)]
     assert snap["history"]["soc_pct"] == [(500, 80.0), (600, 79.0), (700, 81.0)]
+    assert snap["history"]["alt_m"] == [(500, 1.0), (600, 1.5), (700, 0.8)]
+    assert snap["history"]["vbat_v"] == [(500, 12.0), (600, 11.9), (700, 12.1)]
     assert snap["session_minmax"]["temp_c"] == [18.0, 25.0]
+    assert snap["session_minmax"]["alt_m"] == [0.8, 1.5]
 
 
 def test_session_minmax_survives_past_ring_window_while_ring_trims():

@@ -5,10 +5,11 @@ import { renderField } from "./hwstate.js";
 import { Sparkline } from "./sparkline.js";
 
 const FIELDS = [
-  { key: "temp_c", label: "Temp", unit: "°C", decimals: 1 },
-  { key: "hum_pct", label: "Hum", unit: "%", decimals: 0 },
-  { key: "press_hpa", label: "Press", unit: "hPa", decimals: 0 },
-  { key: "lux", label: "Lux", unit: "", decimals: 0 },
+  { key: "temp_c", label: "Temp", unit: "°C", decimals: 1, minSpan: 2 },
+  { key: "hum_pct", label: "Hum", unit: "%", decimals: 0, minSpan: 10 },
+  { key: "press_hpa", label: "Press", unit: "hPa", decimals: 0, minSpan: 4 },
+  { key: "alt_m", label: "Alt", unit: "m", decimals: 0, minSpan: 2 },
+  { key: "lux", label: "Lux", unit: "", decimals: 0, minSpan: 100 },
 ];
 
 export class EnvironmentWidget {
@@ -47,6 +48,7 @@ export class EnvironmentWidget {
       const present = f.key === "lux" ? lightPresent
         : f.key === "hum_pct" ? envPresent && envModel !== "bmp280"
         : f.key === "press_hpa" ? envPresent && envModel !== "dht11"
+        : f.key === "alt_m" ? envPresent && envModel !== "dht11"
         : envPresent;
 
       const value = telem
@@ -74,7 +76,7 @@ export class EnvironmentWidget {
           : "";
       }
 
-      this._sparklines[f.key].render(history[f.key], nowWallMs);
+      this._sparklines[f.key].render(history[f.key], nowWallMs, f.minSpan);
     }
   }
 }

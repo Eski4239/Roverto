@@ -54,6 +54,35 @@ html, body {
 
 .tb-label { color: var(--text-dim); font-size: 0.75rem; }
 
+.tb-mode {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.view-only-label {
+  display: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--amber);
+}
+.view-only-label.visible { display: inline; }
+
+#take-control-btn {
+  display: none;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 3px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+#take-control-btn.visible { display: inline-block; }
+
 .link-dot {
   width: 0.6rem;
   height: 0.6rem;

@@ -68,6 +68,25 @@ def create_app(args: argparse.Namespace) -> FastAPI:
     next_cmd_seq = _next_cmd_seq_factory()
     now_ms = _now_ms_factory()
 
+    # Backend-owned 10 Hz command heartbeat (docs/02 §3.1 "this IS the
+    # heartbeat"). Link.send_cmd() only latches the CmdMsg Link's own
+    # internal loop keeps re-sending with an *unchanged* seq -- the rover
+    # acks by seq value (docs/02 §6.8 "seq % 10 == 0"), so re-sending the
+    # same seq forever would mean at most one fresh ack/RTT sample ever.
+    # We instead generate a new CmdMsg (new seq) every tick ourselves, so
+    # the ack/RTT cadence documented in §6.8 (~1 Hz) actually advances.
+    # `last_ui_cmd` holds the latest intent from whichever tab is in
+    # control (drive/mode/servo/buzzer); estop/estop_reset bypass control
+    # entirely (safety) and are merged in from any connected tab.
+    last_ui_cmd: dict = {"drive": {}, "mode": "idle", "servo": {}, "buzzer": False}
+    ui_sockets: set[WebSocket] = set()
+    controlling_ws: Optional[WebSocket] = None
+    # docs/02 §6.9: the GS sets CMD_ESTOP on the *next 3* CmdMsgs then
+    # clears it (latch lives on the rover) -- a UI estop:true request bumps
+    # this counter rather than staying latched forever.
+    estop_remaining = 0
+    estop_reset_pending = False
+
     async def _ingest_loop() -> None:
         async for frame in link.frames():
             recv_wall_ms = time.time() * 1000.0
@@ -94,6 +113,32 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             await asyncio.sleep(SCAN_TIMEOUT_POLL_S)
             state.poll_scan_timeouts(int(time.time() * 1000))
 
+    async def _cmd_heartbeat_loop() -> None:
+        nonlocal estop_remaining, estop_reset_pending
+        while True:
+            send_estop = estop_remaining > 0
+            if send_estop:
+                estop_remaining -= 1
+            send_estop_reset = estop_reset_pending
+            estop_reset_pending = False  # one-shot, like estop_remaining
+            cmd = CmdMsg(
+                t=now_ms(),
+                seq=next_cmd_seq(),
+                drive=CmdDrive(**last_ui_cmd["drive"]),
+                mode=last_ui_cmd["mode"],
+                servo=CmdServo(**last_ui_cmd["servo"]),
+                estop=send_estop,
+                estop_reset=send_estop_reset,
+                buzzer=last_ui_cmd["buzzer"],
+                request_hello=state.needs_hello_request(),
+            )
+            await link.send_cmd(cmd)
+            sent_wall_ms = time.time() * 1000.0
+            state.record_cmd_sent(cmd.seq, sent_wall_ms)
+            session_logger.log_message("tx", cmd, sent_wall_ms)
+            session_logger.log_raw_bytes("tx", wire.encode_cmd(cmd))
+            await asyncio.sleep(Link.HEARTBEAT_PERIOD_S)
+
     async def _camera_probe_loop() -> None:
         camera_url = config.get("camera", {}).get("camera_url")
         if not camera_url:
@@ -110,12 +155,19 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             asyncio.create_task(_ingest_loop()),
             asyncio.create_task(_scan_timeout_loop()),
             asyncio.create_task(_camera_probe_loop()),
+            asyncio.create_task(_cmd_heartbeat_loop()),
         ]
         try:
             yield
         finally:
+            for ws in list(ui_sockets):
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
             for t in tasks:
                 t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await link.stop()
             session_logger.close()
 
@@ -144,7 +196,11 @@ def create_app(args: argparse.Namespace) -> FastAPI:
 
     @app.websocket("/ws/ui")
     async def ws_ui(ws: WebSocket) -> None:
+        nonlocal controlling_ws, estop_remaining, estop_reset_pending
         await ws.accept()
+        ui_sockets.add(ws)
+        if controlling_ws is None:
+            controlling_ws = ws
 
         async def _push_snapshots() -> None:
             while True:
@@ -153,6 +209,8 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                     connected=link.is_connected(),
                     serial_port=link.active_port(),
                 )
+                snapshot["in_control"] = ws is controlling_ws
+                snapshot["controller_present"] = controlling_ws is not None
                 await ws.send_json(snapshot)
                 await asyncio.sleep(SNAPSHOT_PERIOD_S)
 
@@ -160,27 +218,41 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         try:
             while True:
                 data = await ws.receive_json()
-                if data.get("type") != "cmd":
+                msg_type = data.get("type")
+                if msg_type == "take_control":
+                    if controlling_ws is None:
+                        controlling_ws = ws
+                        last_ui_cmd["drive"] = {}
+                        last_ui_cmd["servo"] = {}
                     continue
-                cmd = CmdMsg(
-                    t=now_ms(),
-                    seq=next_cmd_seq(),
-                    drive=CmdDrive(**data.get("drive", {})),
-                    mode=data.get("mode", "idle"),
-                    servo=CmdServo(**data.get("servo", {})),
-                    estop=data.get("estop", False),
-                    estop_reset=data.get("estop_reset", False),
-                    buzzer=data.get("buzzer", False),
-                    request_hello=data.get("request_hello", False) or state.needs_hello_request(),
-                )
-                await link.send_cmd(cmd)
-                sent_wall_ms = time.time() * 1000.0
-                state.record_cmd_sent(cmd.seq, sent_wall_ms)
-                session_logger.log_message("tx", cmd, sent_wall_ms)
-                session_logger.log_raw_bytes("tx", wire.encode_cmd(cmd))
+                if msg_type != "cmd":
+                    continue
+                # estop/estop_reset are a safety exception: honored from any
+                # tab regardless of control state (docs/02 §6.9).
+                if data.get("estop"):
+                    estop_remaining = 3
+                if data.get("estop_reset"):
+                    estop_reset_pending = True
+                if ws is not controlling_ws:
+                    continue
+                if "drive" in data:
+                    last_ui_cmd["drive"] = data["drive"]
+                if "mode" in data:
+                    last_ui_cmd["mode"] = data["mode"]
+                if "servo" in data:
+                    last_ui_cmd["servo"] = data["servo"]
+                if "buzzer" in data:
+                    last_ui_cmd["buzzer"] = bool(data["buzzer"])
         except WebSocketDisconnect:
             pass
         finally:
+            ui_sockets.discard(ws)
+            if controlling_ws is ws:
+                controlling_ws = None
             push_task.cancel()
+            try:
+                await push_task
+            except asyncio.CancelledError:
+                pass
 
     return app

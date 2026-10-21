@@ -60,9 +60,9 @@ let roverEstopActive = false;
 let resetRequestedAt = 0; // debounce: avoid spamming estop_reset while rover hasn't cleared yet
 
 function sendEstop() {
-  for (let i = 0; i < 3; i++) {
-    setTimeout(() => socket.sendCmd({ estop: true }), i * 50);
-  }
+  // Backend now owns the 10 Hz heartbeat and the "set CMD_ESTOP on the next
+  // 3 CmdMsgs" latch (docs/02 §6.9) -- one request is enough.
+  socket.sendCmd({ estop: true });
 }
 
 function requestEstopReset() {
@@ -93,3 +93,8 @@ window.addEventListener("keydown", (e) => {
     if (!roverEstopActive) sendEstop();
   }
 });
+
+const takeControlBtn = document.getElementById("take-control-btn");
+if (takeControlBtn) {
+  takeControlBtn.addEventListener("click", () => socket.takeControl());
+}

@@ -192,20 +192,31 @@ class Link:
 
             try:
                 while not self._stop.is_set():
-                    chunk = ser.read(4096)
-                    if chunk:
-                        buf.extend(chunk)
-                        while b"\x00" in buf:
-                            idx = buf.index(b"\x00")
-                            frame, buf[:] = bytes(buf[:idx]), buf[idx + 1:]
-                            if frame:
-                                self._handle_frame(frame)
+                    # read(1) returns as soon as *any* byte is available (or
+                    # the timeout elapses on silence) instead of blocking
+                    # for a full 4096-byte buffer or the full timeout --
+                    # pyserial's read(size) loops until it has `size` bytes
+                    # or the timeout expires, so read(4096) on a link that
+                    # only ever sends small frames was adding up to a full
+                    # timeout's worth of latency to every frame.
+                    chunk = ser.read(1)
+                    if not chunk:
+                        continue
+                    waiting = ser.in_waiting
+                    if waiting:
+                        chunk += ser.read(waiting)
+                    buf.extend(chunk)
+                    while b"\x00" in buf:
+                        idx = buf.index(b"\x00")
+                        frame, buf[:] = bytes(buf[:idx]), buf[idx + 1:]
+                        if frame:
+                            self._handle_frame(frame)
             except (serial.SerialException, OSError) as exc:
                 log.warning("link lost (%s): %s", self._active_port, exc)
-            except AttributeError:
-                # stop() closed the port (nulling pyserial's internal socket)
-                # while this thread was mid-read; indistinguishable from a
-                # normal disconnect from here.
+            except (AttributeError, ValueError):
+                # stop() closed the port (nulling pyserial's internal socket,
+                # or leaving its fd at -1) while this thread was mid-read;
+                # indistinguishable from a normal disconnect from here.
                 log.debug("link read interrupted by stop() (%s)", self._active_port)
             finally:
                 self._connected.clear()

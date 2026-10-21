@@ -295,8 +295,10 @@ class GroundState:
         self.ring_temp_c = RingBuffer()
         self.ring_hum_pct = RingBuffer()
         self.ring_press_hpa = RingBuffer()
+        self.ring_alt_m = RingBuffer()
         self.ring_lux = RingBuffer()
         self.ring_soc_pct = RingBuffer()
+        self.ring_vbat_v = RingBuffer()
 
         # Session min/max (docs/03 §2 "min/max of session") -- unlike the
         # ring buffers above, these never trim: they must survive past the
@@ -413,11 +415,14 @@ class GroundState:
             self.ring_temp_c.append(msg.t, msg.env.temp_c)
             self.ring_hum_pct.append(msg.t, msg.env.hum_pct)
             self.ring_press_hpa.append(msg.t, msg.env.press_hpa)
+            self.ring_alt_m.append(msg.t, msg.env.alt_m)
             self.ring_lux.append(msg.t, msg.light.lux)
             self.ring_soc_pct.append(msg.t, msg.pwr.soc_pct)
+            self.ring_vbat_v.append(msg.t, msg.pwr.vbat_v)
             self._update_session_minmax("temp_c", msg.env.temp_c)
             self._update_session_minmax("hum_pct", msg.env.hum_pct)
             self._update_session_minmax("press_hpa", msg.env.press_hpa)
+            self._update_session_minmax("alt_m", msg.env.alt_m)
             self._update_session_minmax("lux", msg.light.lux)
         elif isinstance(msg, EventMsg):
             if not self._check_restart(
@@ -485,8 +490,10 @@ class GroundState:
                 "temp_c": self.ring_temp_c.values(),
                 "hum_pct": self.ring_hum_pct.values(),
                 "press_hpa": self.ring_press_hpa.values(),
+                "alt_m": self.ring_alt_m.values(),
                 "lux": self.ring_lux.values(),
                 "soc_pct": self.ring_soc_pct.values(),
+                "vbat_v": self.ring_vbat_v.values(),
             },
             "session_minmax": {
                 field: list(bounds) for field, bounds in self._session_minmax.items()
