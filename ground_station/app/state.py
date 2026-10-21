@@ -98,6 +98,20 @@ class RingBuffer:
         return list(self._samples)
 
 
+# Fields chartable in the Phase 5b expandable-tile UI, in addition to the
+# env/power fields already ringed on GroundState (temp_c, hum_pct,
+# press_hpa, alt_m, lux, soc_pct, vbat_v). Sampled at 1 Hz (not every 10 Hz
+# TELEM) since a 220px chart gains nothing from denser samples and this
+# keeps the ring's memory bounded regardless of TELEM rate.
+HISTORY_SAMPLE_PERIOD_MS = 1000
+CHARTABLE_FIELDS = (
+    "link.loss_pct", "link.rtt_ms", "link.rssi_rover_dbm", "link.rssi_bridge_dbm",
+    "imu.roll_deg", "imu.pitch_deg",
+    "mot.pwm_l", "mot.pwm_r", "mot.rpm_l", "mot.rpm_r",
+    "sys.loop_hz",
+)
+
+
 class LinkTracker:
     """Derives the docs/02 §3.2 `link` block from observed traffic."""
 
@@ -127,9 +141,16 @@ class LinkTracker:
         self._pending_cmd_sent_ms.clear()
         self._rtt_ms = None
 
-    def on_rover_seq(self, seq: int, *, recv_wall_ms: Optional[float] = None) -> None:
+    def on_rover_seq(self, seq: int, *, recv_wall_ms: Optional[float] = None) -> bool:
         """Feed every rover->GS message's seq (docs/02 §1: one counter per
         sender, shared across hello/telem/scan/event/ack) for loss_pct.
+        Returns True if this call detected a restart via the seq-jump
+        fallback below -- the caller (GroundState._check_restart's own
+        t_ms/HELLO-seq-0 detection runs first on every path; this is only a
+        fallback for the rare case that detection misses) must also run its
+        own restart side-effects (event log, scan reassembler reset,
+        hello-tracking) when this returns True, so the two detectors can't
+        silently disagree about whether a restart happened (F4).
 
         Messages built on different code paths (e.g. an ack built while
         handling an inbound cmd vs. telem built in the main tick) can be
@@ -153,6 +174,7 @@ class LinkTracker:
         if recv_wall_ms is None:
             recv_wall_ms = time.time() * 1000.0
 
+        detected_restart = False
         if self._highest_rover_seq is not None:
             rel = ((seq - self._highest_rover_seq + 32768) % 65536) - 32768
             if rel < 0 and -rel >= RESTART_BACKWARD_JUMP:
@@ -161,6 +183,7 @@ class LinkTracker:
                     self._highest_rover_seq, seq,
                 )
                 self._reset_seq_tracking()
+                detected_restart = True
 
         self._recent_rover_seqs.append((recv_wall_ms, seq))
         cutoff = recv_wall_ms - LOSS_WINDOW_MS
@@ -173,6 +196,8 @@ class LinkTracker:
             rel = ((seq - self._highest_rover_seq + 32768) % 65536) - 32768
             if rel > 0:
                 self._highest_rover_seq = seq
+
+        return detected_restart
 
     def on_telem(self, msg: TelemMsg, *, recv_wall_ms: float, rssi: Optional[int]) -> None:
         self._last_telem_recv_ms = recv_wall_ms
@@ -288,6 +313,7 @@ class GroundState:
         self.scan: Optional[ScanMsg] = None
         self.camera: Optional[HwCamera] = None
         self.events: deque[EventMsg] = deque(maxlen=200)
+        self.last_sent_cmd_source: Optional[str] = None  # tests only (F13)
 
         self.link = LinkTracker()
         self._scan_reassembler = ScanReassembler()
@@ -295,7 +321,24 @@ class GroundState:
         self.ring_temp_c = RingBuffer()
         self.ring_hum_pct = RingBuffer()
         self.ring_press_hpa = RingBuffer()
+        self.ring_alt_m = RingBuffer()
         self.ring_lux = RingBuffer()
+        self.ring_soc_pct = RingBuffer()
+        self.ring_vbat_v = RingBuffer()
+
+        # Phase 5b expandable tiles (link/imu/motor/sys fields) -- kept
+        # out of the 10 Hz WS snapshot, served on demand via GET
+        # /api/history so an un-expanded tile costs nothing per tick.
+        self._chart_rings: dict[str, RingBuffer] = {
+            field: RingBuffer() for field in CHARTABLE_FIELDS
+        }
+        self._last_chart_sample_ms: Optional[int] = None
+
+        # Session min/max/mean (docs/03 §2 "min/max of session") -- unlike
+        # the ring buffers above, these never trim: they must survive past
+        # the 5-minute window for as long as this GroundState lives.
+        # (min, max, sum, count) -- mean is sum/count, computed on read.
+        self._session_minmax: dict[str, tuple[float, float, float, int]] = {}
 
         self._last_t_ms: Optional[int] = None
         self._newest_post_restart_t_ms: Optional[int] = None
@@ -309,6 +352,30 @@ class GroundState:
         # this process started) so a page refresh or a rover reboot doesn't
         # reset it -- only restarting the ground station itself does.
         self.mission_start_wall_ms: Optional[float] = None
+
+    def _apply_restart_side_effects(
+        self, t_ms: int, seq: int, recv_wall_ms: float,
+        *, is_hello: bool, reset_link: bool,
+    ) -> None:
+        """Shared by both restart detectors (F4): _check_restart's own
+        t_ms/HELLO-seq-0 check below, and LinkTracker.on_rover_seq's
+        seq-jump fallback (called with reset_link=False, since LinkTracker
+        has already reset its own state internally by the time it reports
+        back -- calling link.reset() again here would be redundant, not
+        wrong, but reset_link keeps the intent explicit at each call site)."""
+        if reset_link:
+            self.link.reset()
+        self._scan_reassembler.reset()
+        reason = self.hello.reset_reason if (is_hello and self.hello) else "pending"
+        self.events.append(EventMsg(
+            t=t_ms, seq=0, level="warn", code="ROVER_RESTART",
+            msg=f"rover restart detected (reset_reason={reason})",
+        ))
+        self._hello_seen_since_restart = is_hello
+        self._awaiting_hello_request = not is_hello
+        self._newest_post_restart_t_ms = t_ms
+        self._newest_post_restart_seq = seq
+        self._restart_detected_wall_ms = recv_wall_ms
 
     def _check_restart(
         self, t_ms: int, seq: int, recv_wall_ms: float,
@@ -348,18 +415,9 @@ class GroundState:
                 restarted = True
 
         if restarted:
-            self.link.reset()
-            self._scan_reassembler.reset()
-            reason = self.hello.reset_reason if (is_hello and self.hello) else "pending"
-            self.events.append(EventMsg(
-                t=t_ms, seq=0, level="warn", code="ROVER_RESTART",
-                msg=f"rover restart detected (reset_reason={reason})",
-            ))
-            self._hello_seen_since_restart = is_hello
-            self._awaiting_hello_request = not is_hello
-            self._newest_post_restart_t_ms = t_ms
-            self._newest_post_restart_seq = seq
-            self._restart_detected_wall_ms = recv_wall_ms
+            self._apply_restart_side_effects(
+                t_ms, seq, recv_wall_ms, is_hello=is_hello, reset_link=True,
+            )
         elif is_hello:
             self._hello_seen_since_restart = True
             self._awaiting_hello_request = False
@@ -377,8 +435,59 @@ class GroundState:
             self._newest_post_restart_seq = seq
         return True
 
+    def _update_session_minmax(self, field: str, value: Optional[float]) -> None:
+        if value is None:
+            return
+        lo, hi, total, count = self._session_minmax.get(field, (value, value, 0.0, 0))
+        self._session_minmax[field] = (min(lo, value), max(hi, value), total + value, count + 1)
+
+    def _update_chart_rings(self, recv_wall_ms: float, telem: TelemMsg, link_block: LinkBlock) -> None:
+        """Sample the Phase 5b chartable fields at 1 Hz (not every TELEM).
+
+        Keyed by the GS's own receive wall-clock, not the rover's t_ms: t_ms
+        resets to 0 on every rover reboot (D-015), which would zig-zag or gap
+        a ring keyed by it. recv_wall_ms only ever increases, restart or not.
+        """
+        if (
+            self._last_chart_sample_ms is not None
+            and recv_wall_ms - self._last_chart_sample_ms < HISTORY_SAMPLE_PERIOD_MS
+        ):
+            return
+        self._last_chart_sample_ms = recv_wall_ms
+        values = {
+            "link.loss_pct": link_block.loss_pct,
+            "link.rtt_ms": link_block.rtt_ms,
+            "link.rssi_rover_dbm": link_block.rssi_rover_dbm,
+            "link.rssi_bridge_dbm": link_block.rssi_bridge_dbm,
+            "imu.roll_deg": telem.imu.roll_deg,
+            "imu.pitch_deg": telem.imu.pitch_deg,
+            "mot.pwm_l": telem.mot.pwm_l,
+            "mot.pwm_r": telem.mot.pwm_r,
+            "mot.rpm_l": telem.mot.rpm_l,
+            "mot.rpm_r": telem.mot.rpm_r,
+            "sys.loop_hz": telem.sys.loop_hz,
+        }
+        for field, value in values.items():
+            self._chart_rings[field].append(int(recv_wall_ms), value)
+
+    def chart_history(self, field: str) -> list[tuple[int, float]]:
+        """Values for one CHARTABLE_FIELDS entry; [] if the field is unknown."""
+        ring = self._chart_rings.get(field)
+        return ring.values() if ring is not None else []
+
     def needs_hello_request(self) -> bool:
         return self._awaiting_hello_request
+
+    def _feed_rover_seq(self, seq: int, t_ms: int, recv_wall_ms: float, *, is_hello: bool) -> None:
+        """Wraps LinkTracker.on_rover_seq so its seq-jump-fallback restart
+        detection (returns True) also runs GroundState's own restart
+        side-effects (F4) -- without this, a restart caught only by that
+        fallback would reset LinkTracker's loss/seq state but leave the
+        event log, scan reassembler and hello-tracking stale."""
+        if self.link.on_rover_seq(seq, recv_wall_ms=recv_wall_ms):
+            self._apply_restart_side_effects(
+                t_ms, seq, recv_wall_ms, is_hello=is_hello, reset_link=False,
+            )
 
     def ingest(self, msg, *, rssi: Optional[int], recv_wall_ms: float) -> None:
         if isinstance(msg, HelloMsg):
@@ -387,7 +496,7 @@ class GroundState:
             ):
                 return
             self.hello = msg
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=True)
         elif isinstance(msg, TelemMsg):
             if not self._check_restart(
                 msg.t, msg.seq, recv_wall_ms, is_hello=False, hello_seq=None,
@@ -396,35 +505,53 @@ class GroundState:
             if self.mission_start_wall_ms is None:
                 self.mission_start_wall_ms = recv_wall_ms
             self.telem = msg
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=False)
             self.link.on_telem(msg, recv_wall_ms=recv_wall_ms, rssi=rssi)
             self.ring_temp_c.append(msg.t, msg.env.temp_c)
             self.ring_hum_pct.append(msg.t, msg.env.hum_pct)
             self.ring_press_hpa.append(msg.t, msg.env.press_hpa)
+            self.ring_alt_m.append(msg.t, msg.env.alt_m)
             self.ring_lux.append(msg.t, msg.light.lux)
+            self.ring_soc_pct.append(msg.t, msg.pwr.soc_pct)
+            self.ring_vbat_v.append(msg.t, msg.pwr.vbat_v)
+            self._update_session_minmax("temp_c", msg.env.temp_c)
+            self._update_session_minmax("hum_pct", msg.env.hum_pct)
+            self._update_session_minmax("press_hpa", msg.env.press_hpa)
+            self._update_session_minmax("alt_m", msg.env.alt_m)
+            self._update_session_minmax("lux", msg.light.lux)
+            self._update_chart_rings(
+                recv_wall_ms, msg,
+                self.link.to_block(now_wall_ms=recv_wall_ms, connected=True, serial_port=None),
+            )
         elif isinstance(msg, EventMsg):
             if not self._check_restart(
                 msg.t, msg.seq, recv_wall_ms, is_hello=False, hello_seq=None,
             ):
                 return
             self.events.append(msg)
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=False)
         elif isinstance(msg, AckMsg):
             if not self._check_restart(
                 msg.t, msg.seq, recv_wall_ms, is_hello=False, hello_seq=None,
             ):
                 return
-            self.link.on_rover_seq(msg.seq, recv_wall_ms=recv_wall_ms)
+            self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=False)
             self.link.on_ack(msg, recv_wall_ms=recv_wall_ms)
         elif isinstance(msg, wire.BridgeStatus):
             self.link.on_bridge_status(msg)
 
     def ingest_scan_fragment(self, scan: ScanMsg, part: int, parts: int, now_ms: int) -> None:
+        recv_wall_ms = float(now_ms)
         if not self._check_restart(
-            scan.t, scan.seq, float(now_ms), is_hello=False, hello_seq=None,
+            scan.t, scan.seq, recv_wall_ms, is_hello=False, hello_seq=None,
         ):
             return
-        self.link.on_rover_seq(scan.seq)
+        # F5: pass recv_wall_ms through like every other call site above --
+        # previously on_rover_seq() defaulted it to time.time() here, which
+        # could diverge from the now_ms the caller (and _check_restart just
+        # above) actually used, skewing this one message's loss-window
+        # timing against a test/mock clock.
+        self._feed_rover_seq(scan.seq, scan.t, recv_wall_ms, is_hello=False)
         completed = self._scan_reassembler.add_fragment(scan, part, parts, now_ms)
         if completed is not None:
             self.scan = completed
@@ -453,17 +580,35 @@ class GroundState:
         if hello_dump is not None and self.camera is not None:
             hello_dump["hw"]["camera"] = self.camera.model_dump()
 
+        # F9: only the last 10 go over the wire, every 10Hz tick -- the full
+        # self.events deque (up to 200) used to be re-sent in full on every
+        # snapshot too, duplicating recent_events for no consumer (the full
+        # filterable log view is Phase 7, docs/06; nothing today reads
+        # anything but recent_events -- see eventlog.js). self.events stays
+        # as the backend's own full history for when Phase 7 needs it.
         recent_events = list(self.events)[-10:][::-1]  # newest first
         return {
             "hello": hello_dump,
             "telem": self.telem.model_dump() if self.telem else None,
             "scan": self.scan.model_dump() if self.scan else None,
-            "events": [e.model_dump() for e in self.events],
             "recent_events": [
                 {"t": e.t, "level": e.level, "code": e.code, "msg": e.msg}
                 for e in recent_events
             ],
             "mission_start_wall_ms": self.mission_start_wall_ms,
+            "history": {
+                "temp_c": self.ring_temp_c.values(),
+                "hum_pct": self.ring_hum_pct.values(),
+                "press_hpa": self.ring_press_hpa.values(),
+                "alt_m": self.ring_alt_m.values(),
+                "lux": self.ring_lux.values(),
+                "soc_pct": self.ring_soc_pct.values(),
+                "vbat_v": self.ring_vbat_v.values(),
+            },
+            "session_minmax": {
+                field: [lo, hi, total / count]
+                for field, (lo, hi, total, count) in self._session_minmax.items()
+            },
             "link": self.link.to_block(
                 now_wall_ms=now_wall_ms, connected=connected, serial_port=serial_port,
             ).model_dump(),

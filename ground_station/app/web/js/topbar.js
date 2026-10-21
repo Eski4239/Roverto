@@ -1,16 +1,14 @@
 import { renderField, ageText, thresholdClass } from "./hwstate.js";
+import { thresholdClassFor } from "./thresholds.js";
 
-const THRESHOLDS = {
-  vbat_v: { greenAbove: 11.1, redBelow: 10.5 },
-  rssi_dbm: { greenAbove: -67, redBelow: -80 },
-  loss_pct: { greenBelow: 2, redAbove: 10 },
-};
+const VBAT_THRESHOLDS = { greenAbove: 11.1, redBelow: 10.5 };
 
 export class TopBar {
   constructor(root) {
     this.root = root;
     this.lastVbatWallMs = null;
     this.lastVbatValue = null;
+    this.lastTelemWallMs = null;
   }
 
   render(snapshot, nowWallMs) {
@@ -18,33 +16,53 @@ export class TopBar {
     const telem = snapshot.telem;
     const linkLost = link.state === "LOST" || link.state === "NO_BRIDGE";
 
-    this._renderLinkDot(link.state);
+    if (telem) this.lastTelemWallMs = nowWallMs;
+
+    this._renderLinkDot(link.state, nowWallMs);
     this._text("tb-port", link.serial_port || "—");
     this._text("tb-rssi-up", this._fmtRssi(link.rssi_rover_dbm));
     this._text("tb-rssi-down", this._fmtRssi(link.rssi_bridge_dbm));
-    this._text("tb-rtt", link.rtt_ms != null ? `${Math.round(link.rtt_ms)} ms` : "—");
-    this._lossText("tb-loss", link.loss_pct);
+
+    const linkOk = link.state === "OK";
+    this._text("tb-rtt", linkOk && link.rtt_ms != null ? `${Math.round(link.rtt_ms)} ms` : "—");
+    this._lossText("tb-loss", linkOk ? link.loss_pct : null);
 
     // Mission clock is backend-owned (GroundState.mission_start_wall_ms, set
     // once at the first TELEM after the backend started) so a page refresh
     // or a rover reboot doesn't reset it -- only restarting the ground
     // station process does.
     this._text("tb-clock", this._missionClock(snapshot.mission_start_wall_ms, nowWallMs));
+    this._text("tb-mode", telem ? telem.state.mode.toUpperCase() : "—");
 
     this._renderBattery(telem, linkLost, nowWallMs);
 
     const recDot = document.getElementById("tb-rec-dot");
     if (recDot) recDot.classList.toggle("active", link.state !== "NO_BRIDGE");
-
-    const noBridge = document.getElementById("no-bridge-banner");
-    if (noBridge) noBridge.classList.toggle("visible", link.state === "NO_BRIDGE");
   }
 
-  _renderLinkDot(state) {
+  /** Seconds since the last TELEM arrived -- shared with dashboard.js's
+   * lost-banner copy so the pill and the banner never disagree on the count. */
+  secondsSinceLastTelem(nowWallMs) {
+    if (this.lastTelemWallMs == null) return 0;
+    return Math.max(0, Math.round((nowWallMs - this.lastTelemWallMs) / 1000));
+  }
+
+  _renderLinkDot(state, nowWallMs) {
     const dot = document.getElementById("link-dot");
     const label = document.getElementById("link-state-text");
     if (dot) dot.className = `link-dot ${state || ""}`;
-    if (label) label.textContent = state || "—";
+    if (!label) return;
+    if (state === "OK") {
+      label.textContent = "LINK OK";
+    } else if (state === "STALE") {
+      label.textContent = "STALE";
+    } else if (state === "LOST") {
+      label.textContent = `LOST · ${this.secondsSinceLastTelem(nowWallMs)}s`;
+    } else if (state === "NO_BRIDGE") {
+      label.textContent = "NO BRIDGE";
+    } else {
+      label.textContent = "—";
+    }
   }
 
   _renderBattery(telem, linkLost, nowWallMs) {
@@ -67,20 +85,17 @@ export class TopBar {
       vbatEl.textContent = linkLost && this.lastVbatValue != null
         ? `${this.lastVbatValue.toFixed(1)} V (${ageText(this.lastVbatWallMs, nowWallMs)})`
         : field.text;
-      vbatEl.className = field.cls || thresholdClass(vbat, THRESHOLDS.vbat_v);
+      vbatEl.className = field.cls || thresholdClassFor("vbat_v", vbat);
     }
 
     const fill = document.querySelector("#tb-battery-bar .fill");
     if (fill) {
+      const cls = thresholdClass(vbat, VBAT_THRESHOLDS);
       const pct = soc != null ? Math.max(0, Math.min(100, soc)) : 0;
       fill.style.width = `${pct}%`;
       fill.style.background = linkLost
-        ? "var(--grey)"
-        : thresholdClass(vbat, THRESHOLDS.vbat_v) === "value-red"
-          ? "var(--red)"
-          : thresholdClass(vbat, THRESHOLDS.vbat_v) === "value-amber"
-            ? "var(--amber)"
-            : "var(--green)";
+        ? "var(--stale)"
+        : cls === "value-red" ? "var(--bad)" : cls === "value-amber" ? "var(--warn)" : "var(--ok)";
     }
     this._text("tb-soc", soc != null ? `${Math.round(soc)} %` : "—");
   }
@@ -115,6 +130,6 @@ export class TopBar {
     if (!el) return;
     // null = not enough samples yet (e.g. just after a restart), not 0%.
     el.textContent = lossPct != null ? `${lossPct.toFixed(1)} %` : "—";
-    el.className = lossPct != null ? thresholdClass(lossPct, THRESHOLDS.loss_pct) : "";
+    el.className = lossPct != null ? thresholdClassFor("loss_pct", lossPct) : "";
   }
 }

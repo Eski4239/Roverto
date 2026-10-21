@@ -116,7 +116,7 @@ class RoverState:
     sweep_dir: int = 1
 
     estop_latched: bool = False
-    wd_ok: bool = True
+    wd_ok: bool = False  # becomes True only once a CmdMsg is actually accepted
     last_cmd_mono: Optional[float] = None
     last_accepted_mode: Optional[str] = None
     last_accepted_flags: Optional[int] = None
@@ -125,7 +125,6 @@ class RoverState:
     hello_requested: bool = True  # send HELLO immediately on boot
     wd_stop_sent: bool = False
     pending_events: list[EventMsg] = field(default_factory=list)
-    pending_acks: list[wire.AckMsg] = field(default_factory=list)
 
     # GS-1: edge-triggered events, emitted once per state change, not per tick.
     tilt_active: bool = False
@@ -145,6 +144,41 @@ class RoverState:
     silent_for_s: Optional[float] = None
     silent_started_mono: Optional[float] = None
     silent_done: bool = False
+
+    # tests only: counts frames the serial parser had to drop (bad CRC,
+    # truncated, or otherwise undecodable) vs. CmdMsgs actually applied --
+    # used to detect two writers' frames interleaving on the wire (F13/F20).
+    malformed_frame_count: int = 0
+    accepted_cmd_count: int = 0
+    last_cmd_buzzer: Optional[bool] = None
+
+    # watchdog (docs/02 §5.1): an event-loop timer armed/re-armed on every
+    # accepted CmdMsg, not a poll inside tick() -- rover_main's own watchdog
+    # checks at a much higher rate than the 10Hz TELEM tick this simulator
+    # otherwise runs at, so polling it from tick() could let WD_STOP fire
+    # up to one whole tick (100ms) later than a real rover would.
+    _watchdog_handle: Optional[object] = field(default=None, repr=False)
+
+    def _trip_watchdog(self) -> None:
+        self.wd_ok = False
+        self.drive_l = 0.0
+        self.drive_r = 0.0
+        if not self.wd_stop_sent:
+            self.wd_stop_sent = True
+            self._emit_event("warn", "WD_STOP", "no cmd for 500 ms")
+
+    def _arm_watchdog(self, loop: "asyncio.AbstractEventLoop", *, cmd_received: bool) -> None:
+        """Called both when a CmdMsg is actually accepted (cmd_received=True
+        -- the watchdog is satisfied, wd_ok goes true) and at boot/reboot
+        before any CmdMsg has arrived yet (cmd_received=False -- just starts
+        the same WATCHDOG_MS countdown a real power-on would, without
+        prematurely claiming the link is healthy)."""
+        if self._watchdog_handle is not None:
+            self._watchdog_handle.cancel()
+        if cmd_received:
+            self.wd_ok = True
+            self.wd_stop_sent = False
+        self._watchdog_handle = loop.call_later(WATCHDOG_MS / 1000.0, self._trip_watchdog)
 
     def now_ms(self) -> int:
         return int((time.monotonic() - self.start_mono) * 1000)
@@ -175,9 +209,8 @@ class RoverState:
         self.seq = 0
         self.hello_requested = True
         self.estop_latched = False
-        self.wd_ok = True
-        self.wd_stop_sent = False
         self.last_cmd_mono = None
+        self._arm_watchdog(asyncio.get_running_loop(), cmd_received=False)
         self.last_accepted_mode = None
         self.last_accepted_flags = None
         self.last_accepted_drive_zero = True
@@ -191,10 +224,9 @@ class RoverState:
         self.drive_l = 0.0
         self.drive_r = 0.0
         # A real power-cycle can't have anything queued with a pre-reboot
-        # seq: drop pending acks/events built before the reboot, and any
-        # scan sweep in progress (its fragments share the old scan's seq).
+        # seq: drop pending events built before the reboot, and any scan
+        # sweep in progress (its fragments share the old scan's seq).
         self.pending_events.clear()
-        self.pending_acks.clear()
         self.scan_id = 0
 
     def is_silent(self) -> bool:
@@ -218,6 +250,12 @@ class RoverState:
 
     def tick(self) -> None:
         """Advance drift/decay and enforce safety rules. Call at ~10 Hz."""
+        if self._watchdog_handle is None:
+            # boot: no CmdMsg accepted yet, arm the same WATCHDOG_MS deadline
+            # a real power-on would -- fires once as the expected startup
+            # transient (test_no_wd_stop_with_zero_ui_clients) unless a
+            # CmdMsg arrives first and re-arms it via apply_cmd().
+            self._arm_watchdog(asyncio.get_running_loop(), cmd_received=False)
         now = time.monotonic()
         elapsed = now - self.start_mono
         self._maybe_reboot(elapsed)
@@ -233,21 +271,10 @@ class RoverState:
         self.pitch_deg = max(-45.0, min(45.0, self.pitch_deg * 0.98))
         self.yaw_deg = (self.yaw_deg + random.uniform(-0.5, 0.5)) % 360.0
 
-        # watchdog: docs/02 §5.1
-        if self.last_cmd_mono is None:
-            age_ms = None
-        else:
-            age_ms = int((now - self.last_cmd_mono) * 1000)
-        if age_ms is None or age_ms > WATCHDOG_MS:
-            self.wd_ok = False
-            self.drive_l = 0.0
-            self.drive_r = 0.0
-            if not self.wd_stop_sent:
-                self.wd_stop_sent = True
-                self._emit_event("warn", "WD_STOP", "no cmd for 500 ms")
-        else:
-            self.wd_ok = True
-            self.wd_stop_sent = False
+        # watchdog is now an event-loop timer (_arm_watchdog/_trip_watchdog),
+        # armed on every accepted CmdMsg -- see apply_cmd() -- not polled
+        # here, so WD_STOP fires at exactly WATCHDOG_MS, not up to one
+        # TELEM_PERIOD_S tick late.
 
         # estop latch: motors forced 0 regardless of drive
         if self.estop_latched:
@@ -325,6 +352,9 @@ class RoverState:
     def apply_cmd(self, cmd: CmdMsg) -> Optional[wire.AckMsg]:
         """docs/02 §6.8 ack rules; §5.2 estop latch; §5 4b modes (Q-5)."""
         self.last_cmd_mono = time.monotonic()
+        self.accepted_cmd_count += 1
+        self.last_cmd_buzzer = cmd.buzzer  # tests only (F1)
+        self._arm_watchdog(asyncio.get_running_loop(), cmd_received=True)
 
         cmd_flags = (
             (0x01 if cmd.estop else 0)
@@ -353,7 +383,6 @@ class RoverState:
                 self.last_cmd_rejected_event_mono = now
                 self._emit_event("warn", "CMD_REJECTED", "auto mode not implemented")
             ack = wire.AckMsg(t=self.now_ms(), seq=self.next_seq(), ack_seq=cmd.seq, ok=False)
-            self.pending_acks.append(ack)
             return ack
 
         drive_l = max(-1.0, min(1.0, cmd.drive.l))
@@ -395,13 +424,8 @@ class RoverState:
 
         if ack_rule_a or ack_rule_b:
             ack = wire.AckMsg(t=self.now_ms(), seq=self.next_seq(), ack_seq=cmd.seq, ok=True)
-            self.pending_acks.append(ack)
             return ack
         return None
-
-    def drain_pending_acks(self) -> list[wire.AckMsg]:
-        acks, self.pending_acks = self.pending_acks, []
-        return acks
 
     # ------------------------------------------------------------ build ----
 
@@ -538,7 +562,14 @@ def _send_frame(registry: _ClientRegistry, kind: int, rssi: int, payload: bytes,
         log.debug("send failed, client likely gone: %s", exc)
 
 
-async def _rx_loop(reader: asyncio.StreamReader, state: RoverState) -> None:
+async def _rx_loop(
+    reader: asyncio.StreamReader, state: RoverState,
+    registry: _ClientRegistry, args: argparse.Namespace,
+) -> None:
+    """Applies each incoming CmdMsg and, if it earns an ack (docs/02 §6.8),
+    writes it to the socket immediately -- real rover_main replies within
+    one ~10ms loop iteration, not on this simulator's own 100ms telemetry
+    tick, so RTT measurement shouldn't be stretched by that unrelated tick."""
     while True:
         try:
             raw = await reader.readuntil(b"\x00")
@@ -554,8 +585,11 @@ async def _rx_loop(reader: asyncio.StreamReader, state: RoverState) -> None:
             cmd = wire.decode_cmd(sf.payload)
         except Exception as exc:  # noqa: BLE001 — never crash on malformed input
             log.debug("dropping malformed frame: %s", exc)
+            state.malformed_frame_count += 1
             continue
-        state.apply_cmd(cmd)
+        ack = state.apply_cmd(cmd)
+        if ack is not None and not state.is_silent():
+            _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_ack(ack), args.lossy)
 
 
 async def handle_client(
@@ -563,6 +597,7 @@ async def handle_client(
     writer: asyncio.StreamWriter,
     state: RoverState,
     registry: _ClientRegistry,
+    args: argparse.Namespace,
 ) -> None:
     peer = writer.get_extra_info("peername")
     if registry.writer is not None:
@@ -582,7 +617,7 @@ async def handle_client(
         state.wd_stop_sent = False
     log.info("client connected: %s", peer)
     try:
-        await _rx_loop(reader, state)
+        await _rx_loop(reader, state, registry, args)
     except (ConnectionResetError, BrokenPipeError, OSError) as exc:
         log.info("client %s disconnected: %s", peer, exc)
     finally:
@@ -635,11 +670,10 @@ async def _driver_loop(state: RoverState, registry: _ClientRegistry, args: argpa
                 for frag in state.build_scan_fragments():
                     _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, frag, args.lossy)
 
-        pending_acks = state.drain_pending_acks()
+        # Acks are sent immediately in _rx_loop (docs/02 §6.8 RTT measurement
+        # shouldn't be stretched by this unrelated 100ms telemetry tick).
         pending_events = state.drain_pending_events()
         if not silent:
-            for ack in pending_acks:
-                _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_ack(ack), args.lossy)
             for ev in pending_events:
                 _send_frame(registry, wire.SK_RX_FROM_ROVER, args.rssi, wire.encode_event(ev), args.lossy)
 
@@ -706,10 +740,11 @@ async def run_server(args: argparse.Namespace) -> asyncio.base_events.Server:
     registry = _ClientRegistry()
 
     async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        await handle_client(reader, writer, state, registry)
+        await handle_client(reader, writer, state, registry, args)
 
     server = await asyncio.start_server(_handler, args.host, args.port)
     asyncio.create_task(_driver_loop(state, registry, args))
+    server._rover_state = state  # tests only: direct state access, bypassing the wire
     return server
 
 

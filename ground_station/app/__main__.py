@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -32,7 +33,25 @@ def main() -> None:
     if args.replay is not None:
         raise NotImplementedError("--replay is implemented in Phase 7 (docs/06)")
     app = create_app(args)
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    config = uvicorn.Config(app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=2)
+    server = uvicorn.Server(config)
+    try:
+        asyncio.run(server.serve())
+    except SystemExit:
+        # F19: uvicorn.Server.startup() catches a bind OSError itself
+        # (e.g. a second ground station on the same port), logs it via its
+        # own logger (the "ERROR: [Errno ...]" line above this), and calls
+        # sys.exit() directly -- it never reaches an `except OSError` in
+        # calling code. Add one clear, actionable line on top of uvicorn's
+        # own (which stays, since it has the real OS error text);
+        # server.started distinguishes this from a normal shutdown exit.
+        if not server.started:
+            print(
+                "Could not start the ground station -- is another instance "
+                "already running? Stop it first, or use a different port.",
+                file=sys.stderr,
+            )
+        raise
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Rover Ground Station</title>
+<link rel="icon" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
@@ -12,76 +13,99 @@
       <span id="link-dot" class="link-dot"></span>
       <span id="link-state-text" class="link-state-text">—</span>
     </div>
-    <div class="tb-item"><span id="tb-port">—</span></div>
+    <div class="tb-item"><span class="tb-label">PORT</span><span id="tb-port">—</span></div>
     <div class="tb-item">
       <span class="tb-label">RSSI</span>
       <span>↑<span id="tb-rssi-up">—</span></span>
       <span>↓<span id="tb-rssi-down">—</span></span>
     </div>
     <div class="tb-item"><span class="tb-label">RTT</span><span id="tb-rtt">—</span></div>
-    <div class="tb-item"><span class="tb-label">loss</span><span id="tb-loss">—</span></div>
+    <div class="tb-item"><span class="tb-label">LOSS</span><span id="tb-loss">—</span></div>
     <div class="tb-item"><span id="tb-clock">T+00:00:00</span></div>
+    <div class="tb-item"><span id="tb-mode" class="tb-mode">—</span></div>
     <div class="tb-item">
       <span id="tb-vbat">—</span>
       <span id="tb-battery-bar" class="battery-bar"><span class="fill"></span></span>
       <span id="tb-soc">—</span>
     </div>
+    <div class="tb-spacer"></div>
+    <div id="preset-switch" class="preset-switch">
+      <button data-preset="drive">DRIVE</button>
+      <button data-preset="science">SCIENCE</button>
+      <button data-preset="systems" class="active">SYSTEMS</button>
+    </div>
     <div class="tb-item">
       <span id="tb-rec-dot" class="rec-dot"></span>
       <span class="tb-label">REC</span>
     </div>
-    <button id="estop-btn">E-STOP</button>
+    <button id="estop-btn">E-STOP <span class="key-hint">SPACE</span></button>
   </div>
 
-  <div id="estop-banner">E-STOP ACTIVE — click to reset</div>
-
-  <div id="no-bridge-banner">
-    <strong>Plug in ground bridge</strong>
-    <span>— select a serial port:</span>
-    <select id="port-select"><option value="">(loading…)</option></select>
-    <button id="port-connect">Connect</button>
-    <span id="port-status"></span>
+  <div id="banner-zone">
+    <div id="estop-banner">E-STOP ACTIVE — click to reset</div>
+    <div id="lost-banner"></div>
+    <div id="no-bridge-banner">
+      <strong>Plug in ground bridge</strong>
+      <span>— select a serial port:</span>
+      <select id="port-select"><option value="">(loading…)</option></select>
+      <button id="port-connect">Connect</button>
+      <span id="port-status"></span>
+    </div>
   </div>
 
-  <div id="grid">
-    <section id="panel-video" class="panel">
-      <h2>Video</h2>
-      <div class="placeholder-body">
-        <div class="not-installed">CAMERA NOT INSTALLED<br>see docs/04_FUTURE_HARDWARE.md</div>
-      </div>
-    </section>
+  <div id="layout">
+    <div id="main-area">
+      <div id="expand-slot"></div>
 
-    <section id="panel-map" class="panel">
-      <h2>Map</h2>
-      <div class="placeholder-body">polar plot of latest scan (stub)</div>
-    </section>
-
-    <section id="panel-environment" class="panel">
-      <h2>Environment</h2>
-      <div class="placeholder-body">temp / hum / press / lux + 5-min sparklines</div>
-    </section>
-
-    <section id="panel-health" class="panel">
-      <h2>Rover Health</h2>
-      <div class="placeholder-body" style="flex-direction:column; align-items:stretch; gap:0.4rem;">
-        <div style="color:var(--text-dim); font-size:0.8rem;">motors / attitude / sonar — placeholder</div>
-        <div>
-          <div class="subhead">Power</div>
-          <div id="power-widget"></div>
+      <section class="preset-panel" data-preset="systems" id="preset-systems">
+        <div id="strips-systems"></div>
+        <div id="power-tiles"></div>
+        <div class="card-row">
+          <div id="motor-card-systems"></div>
+          <div id="attitude-card-systems"></div>
+          <section class="card link-card">
+            <h2>LINK</h2>
+            <div class="row"><span class="k">Loss (10s)</span><span class="v" id="link-loss"></span></div>
+            <div class="row"><span class="k">RTT</span><span class="v" id="link-rtt"></span></div>
+            <div class="row"><span class="k">Rx rate</span><span class="v" id="link-rxhz"></span></div>
+            <div class="row"><span class="k">RSSI rover</span><span class="v" id="link-rssi-rover"></span></div>
+            <div class="row"><span class="k">RSSI bridge</span><span class="v" id="link-rssi-bridge"></span></div>
+            <div class="row"><span class="k">Bridge send fails</span><span class="v" id="link-tx-fail"></span></div>
+          </section>
         </div>
-        <div style="color:var(--text-dim); font-size:0.8rem;">sys: heap / loop Hz / uptime — placeholder</div>
-      </div>
-    </section>
+        <div id="sysstats-widget"></div>
+      </section>
 
-    <section id="panel-control" class="panel">
-      <h2>Control</h2>
-      <div class="placeholder-body">WASD / mode / servo / buzzer (placeholder)</div>
-    </section>
+      <section class="preset-panel" data-preset="science" id="preset-science" hidden>
+        <div id="strips-science"></div>
+        <div id="env-tiles"></div>
+        <div id="sonar-card-science"></div>
+      </section>
 
-    <section id="panel-eventlog" class="panel">
+      <section class="preset-panel" data-preset="drive" id="preset-drive" hidden>
+        <div class="drive-layout">
+          <div id="surroundings-widget"></div>
+          <div class="drive-side-stack">
+            <div id="motor-card-drive"></div>
+            <div id="attitude-card-drive"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <aside id="control-column"></aside>
+  </div>
+
+  <div id="eventlog-dock">
+    <div class="eventlog-header">
       <h2>Event Log</h2>
-      <div id="event-log"></div>
-    </section>
+      <div class="btn-group" id="eventlog-filter">
+        <button class="active" data-filter="all">All</button>
+        <button data-filter="warn">Warn</button>
+        <button data-filter="error">Error</button>
+      </div>
+    </div>
+    <div id="event-log"></div>
   </div>
 </div>
 <script type="module" src="/static/js/dashboard.js"></script>

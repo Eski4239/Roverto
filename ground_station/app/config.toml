@@ -35,6 +35,18 @@ red_below = 20
 green_below = 200
 red_above = 500
 
-[thresholds.chip_temp_c]
-green_below = 60
-red_above = 75
+# No [thresholds.chip_temp_c]: D-011 says chip_temp_c is informational
+# only (unreliable on classic ESP32s) and must never be alarmed/colored --
+# sysstatswidget.js deliberately never calls thresholdClassFor for it.
+# An orphaned entry here was a landmine for future generic threshold code
+# that iterates this table (F8).
+
+# Agreed on the top bar (03b layout review, 2026-10-21).
+[thresholds.loss_pct]
+green_below = 2
+red_above = 10
+
+# docs/04_FUTURE_HARDWARE.md §F: below 80 Hz loop rate is a problem.
+[thresholds.loop_hz]
+green_above = 90
+red_below = 80

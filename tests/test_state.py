@@ -9,7 +9,7 @@ from ground_station.app.protocol import (
     HwImu, HwLidar, HwLight, HwSonar, TelemEnv, TelemImu, TelemLight, TelemMot,
 )
 from ground_station.app.protocol import TelemMsg, TelemOdom, TelemPwr, TelemSonar, TelemState, TelemSys
-from ground_station.app.state import GroundState, LinkTracker
+from ground_station.app.state import RING_WINDOW_MS, GroundState, LinkTracker
 
 
 def _telem(seq: int, t: int = 0) -> TelemMsg:
@@ -21,6 +21,19 @@ def _telem(seq: int, t: int = 0) -> TelemMsg:
         state=TelemState(mode="idle", estop=False, wd_ok=True, last_cmd_age_ms=0),
         sys=TelemSys(rssi_dbm=-60, heap_b=1000, uptime_s=1, loop_hz=100),
     )
+
+
+def _telem_env(
+    seq: int, t: int, *,
+    temp_c: Optional[float] = None, soc_pct: Optional[float] = None,
+    alt_m: Optional[float] = None, vbat_v: Optional[float] = None,
+) -> TelemMsg:
+    msg = _telem(seq, t)
+    msg.env.temp_c = temp_c
+    msg.env.alt_m = alt_m
+    msg.pwr.soc_pct = soc_pct
+    msg.pwr.vbat_v = vbat_v
+    return msg
 
 
 def _feed_seqs(tracker: LinkTracker, seqs: list[int], *, step_ms: float = 100.0, start_ms: float = 1000.0) -> Optional[float]:
@@ -185,6 +198,109 @@ def test_ground_state_ingest_telem_updates_snapshot():
     assert snap["telem"]["seq"] == 1
     assert snap["link"]["state"] == "OK"
     assert snap["link"]["rssi_rover_dbm"] == -60
+    assert snap["telem"]["state"]["mode"] == "idle"
+
+
+def test_f9_snapshot_omits_full_events_list():
+    """F9: the snapshot used to resend the full self.events deque (up to
+    200 entries) on every 10Hz tick, duplicating recent_events (the last
+    10, which is all any current consumer -- eventlog.js -- reads). The
+    full list is gone from the wire payload; recent_events still works,
+    and self.events still holds the full history internally (for a future
+    Phase 7 full-log view)."""
+    state = GroundState()
+    for i in range(15):
+        state.ingest(_telem(i, t=i * 100), rssi=-55, recv_wall_ms=1000.0 + i)
+
+    snap = state.snapshot(now_wall_ms=2000.0, connected=True, serial_port="COM5")
+    assert "events" not in snap
+    assert "recent_events" in snap
+    assert len(snap["recent_events"]) <= 10
+
+    # self.events (backend-internal, not serialized) still has the full
+    # history for the events this test actually generated via restart/etc
+    # -- here there's no restart, so just confirm the attribute exists and
+    # is independent of the snapshot's recent_events slicing.
+    assert hasattr(state, "events")
+
+
+def test_snapshot_history_and_session_minmax_track_env_values():
+    state = GroundState()
+    state.ingest(
+        _telem_env(1, t=500, temp_c=20.0, soc_pct=80.0, alt_m=1.0, vbat_v=12.0),
+        rssi=-55, recv_wall_ms=1000.0,
+    )
+    state.ingest(
+        _telem_env(2, t=600, temp_c=25.0, soc_pct=79.0, alt_m=1.5, vbat_v=11.9),
+        rssi=-55, recv_wall_ms=1100.0,
+    )
+    state.ingest(
+        _telem_env(3, t=700, temp_c=18.0, soc_pct=81.0, alt_m=0.8, vbat_v=12.1),
+        rssi=-55, recv_wall_ms=1200.0,
+    )
+    snap = state.snapshot(now_wall_ms=1300.0, connected=True, serial_port="COM5")
+
+    assert snap["history"]["temp_c"] == [(500, 20.0), (600, 25.0), (700, 18.0)]
+    assert snap["history"]["soc_pct"] == [(500, 80.0), (600, 79.0), (700, 81.0)]
+    assert snap["history"]["alt_m"] == [(500, 1.0), (600, 1.5), (700, 0.8)]
+    assert snap["history"]["vbat_v"] == [(500, 12.0), (600, 11.9), (700, 12.1)]
+    assert snap["session_minmax"]["temp_c"] == [18.0, 25.0, (20.0 + 25.0 + 18.0) / 3]
+    assert snap["session_minmax"]["alt_m"] == [0.8, 1.5, (1.0 + 1.5 + 0.8) / 3]
+
+
+def test_session_minmax_survives_past_ring_window_while_ring_trims():
+    """docs/03 §2: Environment shows 'min/max of session', distinct from the
+    5-min sparkline window -- an old extreme value must stay in min/max even
+    after the ring buffer has trimmed it out."""
+    state = GroundState()
+    state.ingest(_telem_env(1, t=0, temp_c=5.0), rssi=-55, recv_wall_ms=0.0)
+    far_future_t_ms = RING_WINDOW_MS + 60_000
+    state.ingest(_telem_env(2, t=far_future_t_ms, temp_c=22.0), rssi=-55, recv_wall_ms=far_future_t_ms)
+    snap = state.snapshot(now_wall_ms=far_future_t_ms + 10.0, connected=True, serial_port="COM5")
+
+    assert snap["history"]["temp_c"] == [(far_future_t_ms, 22.0)]
+    assert snap["session_minmax"]["temp_c"] == [5.0, 22.0, (5.0 + 22.0) / 2]
+
+
+def test_chart_history_survives_rover_restart_without_gap_or_zigzag():
+    """Phase 5b expandable-tile charts (GET /api/history) are keyed by the
+    GS's own receive wall-clock, not the rover's t_ms -- t_ms resets to 0 on
+    every rover reboot (D-015), which would otherwise gap or zig-zag the
+    ring. Fill a ring pre-restart, simulate a restart (t_ms back to 0), keep
+    filling post-restart, and check the combined series is still in strictly
+    increasing time order covering the full window with no gap."""
+    state = GroundState()
+    recv_ms = 0.0
+    t_ms = 0
+    seq = 0
+    # Pre-restart: 10 s of samples 1 s apart, well past HISTORY_SAMPLE_PERIOD_MS.
+    for _ in range(10):
+        state.ingest(_telem(seq, t=t_ms), rssi=-55, recv_wall_ms=recv_ms)
+        recv_ms += 1000.0
+        t_ms += 1000
+        seq += 1
+
+    # Rover reboots: t_ms drops back near 0, seq resets too, but the GS's
+    # own receive clock keeps climbing -- this is what must keep the ring sane.
+    t_ms = 0
+    seq = 0
+    for _ in range(10):
+        state.ingest(_telem(seq, t=t_ms), rssi=-55, recv_wall_ms=recv_ms)
+        recv_ms += 1000.0
+        t_ms += 1000
+        seq += 1
+
+    series = state.chart_history("sys.loop_hz")
+    assert len(series) >= 15  # both halves present, nothing collapsed to one sample
+    times = [t for t, _ in series]
+    assert times == sorted(times)  # strictly increasing -- no zig-zag
+    assert all(b - a > 0 for a, b in zip(times, times[1:]))  # no duplicate/zero-gap entries
+
+    resp_t = [t for t, _ in series]
+    cutoff_ms = resp_t[-1] - 300 * 1000
+    windowed = [t for t in resp_t if t >= cutoff_ms]
+    assert windowed == sorted(windowed)
+    assert windowed[-1] - windowed[0] <= 300 * 1000 + 1000  # /api/history's own window slice stays sane
 
 
 def test_restart_detected_from_backward_t_ms_at_30s_uptime():
@@ -323,3 +439,58 @@ def test_hello_seq_zero_first_message_ever_is_not_a_restart():
     codes = [e.code for e in state.events]
     assert "ROVER_RESTART" not in codes
     assert state.needs_hello_request() is False
+
+
+def test_f4_seq_jump_fallback_alone_still_runs_restart_side_effects():
+    """F4: LinkTracker.on_rover_seq's own seq-jump fallback (independent of
+    _check_restart's t_ms/HELLO-seq-0 detection) could fire by itself
+    when t_ms stays within RESTART_T_MS_TOLERANCE but seq jumps backward
+    by >= RESTART_BACKWARD_JUMP -- previously this reset LinkTracker's
+    loss/seq tracking silently, without GroundState ever logging
+    ROVER_RESTART, resetting the scan reassembler, or updating
+    hello-tracking. Craft exactly that: t_ms advances normally (no t_ms-
+    based restart), seq jumps back by 1200 (>= RESTART_BACKWARD_JUMP)."""
+    state = GroundState()
+    state.ingest(_telem(5000, t=10_000), rssi=-55, recv_wall_ms=1000.0)
+    assert [e.code for e in state.events] == []  # sanity: no restart yet
+
+    # t_ms advances normally (well within tolerance of the prior message),
+    # but seq jumps backward by 1200 -- only the fallback can catch this.
+    state.ingest(_telem(3800, t=10_100), rssi=-55, recv_wall_ms=1100.0)
+
+    codes = [e.code for e in state.events]
+    assert "ROVER_RESTART" in codes, (
+        "seq-jump-only restart must still be reported by GroundState, not "
+        "just silently absorbed by LinkTracker's own reset"
+    )
+
+
+def test_f5_scan_fragment_passes_real_recv_wall_ms_to_on_rover_seq():
+    """F5: ingest_scan_fragment's on_rover_seq call previously omitted
+    recv_wall_ms, defaulting to time.time() instead of the caller-supplied
+    now_ms -- inconsistent with every other ingest() call site. Confirm
+    the scan fragment's seq is recorded under the now_ms-derived
+    timestamp, not a wall-clock one that could diverge from it: feed a
+    seq via a scan fragment at a now_ms far in the "past" relative to
+    real wall-clock, then check loss_pct's window (keyed off recv_wall_ms)
+    reflects that supplied time, not time.time()."""
+    from ground_station.app.protocol import ScanMsg, ScanPose
+
+    state = GroundState()
+    scan = ScanMsg(
+        t=500, seq=42, src="sonar", scan_id=1, pose=ScanPose(), pts=[[0.0, 100.0]],
+    )
+    # now_ms is in GS-monotonic-ish space, deliberately not close to
+    # time.time()*1000 -- if on_rover_seq silently used time.time()
+    # instead, the recorded sample's recv_wall_ms would land far outside
+    # this now_ms-based window check below.
+    now_ms = 2_000_000_000  # an arbitrary, real-world-wall-clock-distinct value
+    state.ingest_scan_fragment(scan, 1, 1, now_ms)
+
+    assert len(state.link._recent_rover_seqs) == 1
+    recorded_wall_ms, recorded_seq = state.link._recent_rover_seqs[0]
+    assert recorded_seq == 42
+    assert recorded_wall_ms == float(now_ms), (
+        f"expected on_rover_seq to receive now_ms={now_ms} as recv_wall_ms, "
+        f"got {recorded_wall_ms} (likely defaulted to time.time() instead)"
+    )

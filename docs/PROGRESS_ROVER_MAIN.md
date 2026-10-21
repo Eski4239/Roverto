@@ -145,6 +145,29 @@ rover_main plan (each step is flashed and tested on its own before the next):
 
 ## 5. Session log (newest first)
 
+### 2026-10-21 — GS Phase 5 fixes (Pablo + Claude)
+- GS side finished Phase 5 (environment/rover health panels + fixes from `wip/phase-5-panels`):
+  topbar mode indicator, `env.alt_m` in the environment panel, sparkline downsampling/min-span,
+  2 s graceful shutdown, and the command heartbeat below.
+- **Backend now owns the 10 Hz CmdMsg heartbeat** (`ground_station/app/main.py`): it generates and
+  sends a fresh `CmdMsg` every 100 ms itself, independent of whether a browser tab is connected or
+  sending anything — RTT now shows a real number without touching E-STOP, and the rover's 500 ms
+  watchdog stays satisfied with zero UI clients connected.
+- **One UI tab is "in control"** at a time: first connected tab controls drive/mode/servo/buzzer;
+  other tabs are view-only (dashboard shows "VIEW ONLY"). No auto-promotion if the controller
+  disconnects — a "TAKE CONTROL" button appears for any tab once nobody is in control.
+  E-STOP/E-STOP-RESET bypass this gating as a safety exception: any connected tab's E-STOP is
+  always honored and merged into the next heartbeat tick, regardless of control state.
+- Found and fixed two real latency bugs surfaced while chasing RTT (not GS-protocol issues, so no
+  docs/02 change): `Link._reader_loop` was calling `ser.read(4096)`, which pyserial blocks on until
+  either 4096 bytes arrive or the full read timeout elapses — switched to `read(1)` + drain
+  `in_waiting`. `simulator/fake_rover.py` was batching the ack onto its own 100 ms telemetry tick
+  instead of writing it the moment `apply_cmd` processes the CmdMsg — now sent immediately from
+  `_rx_loop`, matching how real rover_main is expected to reply within one loop iteration (~10 ms).
+- Added `tests/test_cmd_heartbeat.py` (heartbeat/RTT/control-handoff/E-STOP-bypass/shutdown, run
+  against the real simulator) and a small JS test suite (`tests_js/`, run via `node --test`, wired
+  into `pytest -q` via `tests/test_js.py`; skips with a message if Node isn't installed).
+
 ### 2026-10-20 (3) — GS reply (Pablo + Claude)
 - **D-015 and GS-2 AGREED** with the detection order and refinements written under GS-2
   (t_ms primary, HELLO seq 0 secondary, seq jump fallback; request HELLO if missing).
