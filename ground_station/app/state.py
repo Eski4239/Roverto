@@ -302,6 +302,7 @@ class GroundState:
         self.scan: Optional[ScanMsg] = None
         self.camera: Optional[HwCamera] = None
         self.events: deque[EventMsg] = deque(maxlen=200)
+        self.last_sent_cmd_source: Optional[str] = None  # tests only (F13)
 
         self.link = LinkTracker()
         self._scan_reassembler = ScanReassembler()

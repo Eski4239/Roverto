@@ -31,7 +31,12 @@ format, rebuild in the existing plain HTML/CSS/JS of `ground_station/app/web/`.
    disabled with title "Phase 6" until Phase 6 wires them.
 7. **E-STOP** button top-right: outlined red with a "SPACE" key hint; active (rover reports
    `state.estop`) = solid flashing red. The E-STOP / link banners go in a full-width bar **below** the
-   top bar — never over top-bar content.
+   top bar — never over top-bar content. **Setting** E-STOP bypasses the controller/viewer split
+   entirely: any connected tab's E-STOP request is always honored (docs/02 §6.9), and SPACE always
+   sends it regardless of which element has focus. **Clearing** it does not: `estop_reset` is honored
+   only from the tab currently IN CONTROL — a viewer's reset request is silently ignored, so a
+   non-controlling tab can always stop the rover but can never be the one to say it's safe to move
+   again (F20).
 
 ## 2. Colours (dark theme, all text ≥ 4.5:1)
 | Token | Hex | Use |

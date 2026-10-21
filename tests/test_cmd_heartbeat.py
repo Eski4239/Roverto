@@ -41,6 +41,7 @@ async def _start_app(sim_port: int):
     while not server.started:
         await asyncio.sleep(0.01)
     port = server.servers[0].sockets[0].getsockname()[1]
+    server._gs_app = app  # tests only: access app.state.ground_state etc.
     return server, serve_task, port
 
 
@@ -211,6 +212,53 @@ async def test_estop_bypasses_control_gating():
         await sim_server.wait_closed()
 
 
+async def test_estop_reset_ignored_from_viewer_tab():
+    """F20: estop_reset, unlike estop itself, does NOT bypass control
+    gating -- only the controlling tab may clear the latch (docs/03b §1.7).
+    A viewer's estop_reset must be silently ignored."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_a:
+            await _recv_snapshot(ws_a)  # A is in control
+
+            async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws_b:
+                snap_b = await _recv_snapshot(ws_b)
+                assert snap_b["in_control"] is False
+
+                # B (viewer) latches E-STOP -- allowed, estop bypasses gating.
+                await ws_b.send(json.dumps({"type": "cmd", "estop": True}))
+                deadline = time.monotonic() + TIMEOUT
+                while time.monotonic() < deadline:
+                    snap = await _recv_snapshot(ws_b)
+                    if snap.get("telem") is not None and snap["telem"]["state"]["estop"]:
+                        break
+                else:
+                    pytest.fail("E-STOP never latched")
+
+                # B (viewer) tries to clear it -- must be ignored.
+                await ws_b.send(json.dumps({"type": "cmd", "estop_reset": True}))
+                await asyncio.sleep(0.5)  # well past one heartbeat period
+                snap = await _recv_latest_snapshot(ws_b)
+                assert snap["telem"]["state"]["estop"] is True, (
+                    "a viewer tab's estop_reset must not clear the latch"
+                )
+
+                # A (controller) clears it -- must succeed.
+                await ws_a.send(json.dumps({"type": "cmd", "estop_reset": True}))
+                deadline = time.monotonic() + TIMEOUT
+                while time.monotonic() < deadline:
+                    snap = await _recv_snapshot(ws_a)
+                    if snap.get("telem") is not None and not snap["telem"]["state"]["estop"]:
+                        break
+                else:
+                    pytest.fail("controller's estop_reset was not honored")
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
 async def test_shutdown_within_2s_with_open_ui_socket():
     sim_server, sim_port = await _start_simulator()
     app_server, serve_task, app_port = await _start_app(sim_port)
@@ -223,5 +271,219 @@ async def test_shutdown_within_2s_with_open_ui_socket():
             elapsed = time.monotonic() - start
             assert elapsed < 2.5, f"shutdown took {elapsed:.2f}s"
     finally:
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
+async def test_estop_reaches_simulator_fast_and_consistently():
+    """F13: send_cmd() must write to the wire immediately, not just stash
+    the intent for a second, independently-clocked heartbeat loop to pick
+    up on its own schedule (that could add up to a full HEARTBEAT_PERIOD_S
+    of latency to a safety-critical E-STOP).
+
+    Measured at the simulator's own RoverState, not through the UI's 10Hz
+    WS snapshot -- that push loop, the backend's cmd-heartbeat loop, and
+    the simulator's own TELEM-emission loop are three more independently
+    clocked ~100ms hops layered on top of the actual wire send, so polling
+    "has the UI's estop flag flipped yet" cannot resolve a tight budget
+    even with F13 fixed; this test checks the one hop F13 is actually
+    about -- the moment the CmdMsg lands on the simulator.
+
+    A single-sample "<20ms" assertion flaked under full-suite CPU load
+    (Windows timer/scheduling noise, not the send path itself -- the same
+    class of issue as the watchdog timer's 480ms-not-500ms lower bound
+    above). Instead this takes 10 independent samples (resetting the latch
+    between each, waiting >=300ms so each is measuring a fresh immediate
+    send, not a leftover from the previous one) and checks the *shape* of
+    the distribution: median comfortably under the old uniform-0-100ms
+    heartbeat-tick-wait bug's typical case, and max bounded loosely enough
+    to absorb one slow outlier under load without accepting a real
+    regression back to tick-waiting (which would fail max<50ms on
+    essentially every one of 10 samples, not just an occasional one)."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    rover_state = sim_server._rover_state  # see run_server() -- stashed for tests
+    gs_state = app_server._gs_app.state.ground_state
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws:
+            # Wait for the link to actually be OK (not just "connected"), the
+            # same way a real operator can't press E-STOP before the page
+            # shows live data. Without this, sample 0 can race the backend's
+            # own first heartbeat tick (fired on task start with no initial
+            # delay): the ws_ui coroutine's turn to read this test's E-STOP
+            # message can be scheduling-delayed, and the periodic tick --
+            # which doesn't depend on message processing -- can legitimately
+            # win that race under heavy test-suite CPU load. Settling first
+            # avoids measuring that connection-startup race instead of the
+            # steady-state immediate-send path F13 is actually about.
+            deadline = time.monotonic() + TIMEOUT
+            while time.monotonic() < deadline:
+                snap = await _recv_snapshot(ws)
+                if snap.get("link", {}).get("state") == "OK":
+                    break
+            else:
+                pytest.fail("link never reached OK")
+
+            delays_ms = []
+            sources = []
+            for _ in range(10):
+                gs_state.last_sent_cmd_source = None
+                start = time.monotonic()
+                await ws.send(json.dumps({"type": "cmd", "estop": True}))
+
+                deadline = time.monotonic() + 1.0
+                latched_at = None
+                while time.monotonic() < deadline:
+                    if rover_state.estop_latched:
+                        latched_at = time.monotonic()
+                        break
+                    await asyncio.sleep(0.001)
+                assert latched_at is not None, "E-STOP never latched on the simulator"
+                delays_ms.append((latched_at - start) * 1000)
+                sources.append(gs_state.last_sent_cmd_source)
+
+                # controller clears it so the next iteration starts clean,
+                # and waits comfortably clear of one heartbeat period so
+                # each sample measures a fresh immediate send.
+                await ws.send(json.dumps({"type": "cmd", "estop_reset": True}))
+                deadline = time.monotonic() + TIMEOUT
+                while time.monotonic() < deadline and rover_state.estop_latched:
+                    await asyncio.sleep(0.005)
+                assert not rover_state.estop_latched, "estop_reset was not honored between samples"
+                await asyncio.sleep(0.3)
+
+            delayed_via_heartbeat = [
+                (d, s) for d, s in zip(delays_ms, sources) if d >= 50 and s != "immediate"
+            ]
+            assert not delayed_via_heartbeat, (
+                f"{len(delayed_via_heartbeat)} slow sample(s) were delivered by the "
+                f"heartbeat path, not the immediate send: {delayed_via_heartbeat} "
+                f"(full delays={delays_ms}, sources={sources})"
+            )
+
+            delays_ms_sorted = sorted(delays_ms)
+            median_ms = delays_ms_sorted[len(delays_ms_sorted) // 2]
+            max_ms = delays_ms_sorted[-1]
+            assert max_ms < 50, f"max E-STOP delay {max_ms:.1f}ms over 10 samples: {list(zip(delays_ms, sources))}"
+            assert median_ms < 20, f"median E-STOP delay {median_ms:.1f}ms over 10 samples: {list(zip(delays_ms, sources))}"
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
+async def test_concurrent_estop_and_heartbeat_sends_never_corrupt_frames():
+    """F13/F20 requirement: one writer. The immediate E-STOP send and the
+    periodic heartbeat tick both call _build_and_send_cmd() under the same
+    send_lock, so two CmdMsg frames can never interleave on the wire. Fire
+    many E-STOP requests back-to-back while the heartbeat keeps ticking and
+    confirm the simulator's frame parser never drops a corrupted (bad-CRC
+    or spliced) frame -- a real interleaving bug would otherwise just look
+    like ordinary packet loss (both halves of two spliced frames fail CRC
+    and get silently dropped, same as test_malformed_frame_does_not_crash_
+    server's deliberately-malformed input), so this checks the simulator's
+    own malformed_frame_count rather than inferring health from link state."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    rover_state = sim_server._rover_state
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws:
+            await _recv_snapshot(ws)
+            accepted_before = rover_state.accepted_cmd_count
+
+            for _ in range(30):
+                await ws.send(json.dumps({"type": "cmd", "estop": True}))
+                await asyncio.sleep(0.005)  # interleave with the 100ms heartbeat tick
+
+            await asyncio.sleep(0.3)  # let in-flight sends/acks settle
+
+            assert rover_state.malformed_frame_count == 0, (
+                f"{rover_state.malformed_frame_count} frame(s) failed to decode -- "
+                "likely two writers interleaving on the wire"
+            )
+            assert rover_state.accepted_cmd_count > accepted_before
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
+
+
+async def test_heartbeat_task_death_trips_watchdog_not_stale_resend():
+    """F13 (b): if the backend's own command-generating loop dies, nothing
+    should keep re-sending the last command forever -- that would silently
+    defeat the rover's 500ms watchdog. Killing the heartbeat task must lead
+    to a WD_STOP on the simulator within ~600ms, not an indefinitely
+    repeated stale CmdMsg."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    rover_state = sim_server._rover_state
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws:
+            # let the heartbeat run for a bit first so wd_ok settles true
+            # and any one-time startup WD_STOP (before the link connects,
+            # same transient test_no_wd_stop_with_zero_ui_clients documents)
+            # is well behind us -- otherwise a stale pre-existing WD_STOP
+            # could be mistaken for one caused by this test.
+            deadline = time.monotonic() + TIMEOUT
+            while time.monotonic() < deadline and not rover_state.wd_ok:
+                await asyncio.sleep(0.01)
+            assert rover_state.wd_ok, "watchdog never settled true before the test even started"
+
+            # find and cancel the app's own cmd-heartbeat task directly --
+            # simulates an unhandled exception killing it mid-run.
+            heartbeat_task = None
+            for t in asyncio.all_tasks():
+                coro_name = getattr(t.get_coro(), "__qualname__", "")
+                if "_cmd_heartbeat_loop" in coro_name:
+                    heartbeat_task = t
+                    break
+            assert heartbeat_task is not None, "could not find the backend's heartbeat task"
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            # cancel() is cooperative: a send already past _build_and_send_
+            # cmd()'s only await point (the actual wire write) can still land
+            # on the simulator after cancel() returns but before the task is
+            # actually done -- awaiting the task above ensures that in-flight
+            # send (if any) has fully landed before we snapshot last_cmd_mono
+            # as "the last cmd the simulator will ever accept" below.
+
+            # Measured directly against the simulator's own RoverState, not
+            # the UI's 10Hz WS snapshot (same measurement-layer issue
+            # test_estop_reaches_simulator_under_20ms works around above),
+            # and from the last CmdMsg the simulator actually received
+            # (last_cmd_mono) rather than from task-cancellation time --
+            # that's the true reference point the watchdog itself uses.
+            # The simulator's watchdog is an event-loop timer armed for
+            # exactly WATCHDOG_MS=500 on every accepted CmdMsg (fake_rover.
+            # RoverState._arm_watchdog), not a poll inside the 10Hz tick.
+            last_cmd_before_cancel = rover_state.last_cmd_mono
+            assert last_cmd_before_cancel is not None
+            deadline = time.monotonic() + 1.0
+            wd_stop_at = None
+            while time.monotonic() < deadline:
+                if rover_state.wd_stop_sent:
+                    wd_stop_at = time.monotonic()
+                    break
+                await asyncio.sleep(0.005)
+            assert wd_stop_at is not None, "rover watchdog never tripped after the heartbeat task died"
+            elapsed_ms = (wd_stop_at - last_cmd_before_cancel) * 1000
+            # Lower bound 480 not 500: asyncio's event loop (confirmed via
+            # loop.time()) schedules call_later() precisely, but can still
+            # *fire* a timer up to one clock resolution tick early on
+            # Windows, whose default timer resolution is ~15.6ms -- observed
+            # directly (486488.8900 target vs. 486488.8750 actual fire, a
+            # reproducible one-tick-early quantization, not jitter or a
+            # logic bug). Upper bound 600 keeps real margin for a genuine
+            # regression (F13's original bug showed "never fires" well past
+            # 1000ms, not a borderline-late single tick).
+            assert 480 <= elapsed_ms <= 600, (
+                f"WD_STOP fired {elapsed_ms:.0f}ms after the last accepted CmdMsg "
+                "(expected 480-600ms)"
+            )
+    finally:
+        await _stop_app(app_server, serve_task)
         sim_server.close()
         await sim_server.wait_closed()

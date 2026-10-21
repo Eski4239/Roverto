@@ -90,8 +90,14 @@ class Link:
     """Owns one serial/socket connection; reconnects on failure.
 
     frames() yields decoded SerialFrame objects as they arrive. send_cmd()
-    sets the CmdMsg sent on the next 10 Hz heartbeat tick. All I/O happens
-    off the asyncio loop in a background thread.
+    writes the given CmdMsg to the wire immediately (off the asyncio loop,
+    since pyserial's write() blocks) -- there is exactly one send path, so
+    the caller's "sent" timestamp matches the real wire write, and nothing
+    here ever re-sends a command on its own schedule: if nobody calls
+    send_cmd(), nothing goes out, and the rover's watchdog is free to trip
+    (F13 -- this used to be a second, independently-clocked heartbeat loop
+    that kept re-sending whatever was last handed to it, which could defeat
+    the watchdog if the caller's own heartbeat loop died).
     """
 
     HEARTBEAT_PERIOD_S = 0.1
@@ -117,11 +123,7 @@ class Link:
         self._active_port: Optional[str] = None
         self._stop = threading.Event()
 
-        self._pending_cmd: Optional[CmdMsg] = None
-        self._pending_lock = threading.Lock()
-
         self._reader_thread: Optional[threading.Thread] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------- public ----
 
@@ -131,26 +133,44 @@ class Link:
             target=self._reader_loop, name="link-reader", daemon=True,
         )
         self._reader_thread.start()
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self) -> None:
         self._stop.set()
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
         with self._ser_lock:
             if self._ser is not None:
                 try:
                     self._ser.close()
                 except Exception:  # noqa: BLE001
                     pass
+        if self._reader_thread is not None:
+            # closing the socket above unblocks the reader thread's pending
+            # read() (raising the OSError caught at _reader_loop's except
+            # clause) -- join so stop() doesn't return before that cleanup
+            # (and the "link lost" log line it triggers) has actually run.
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._reader_thread.join, 2.0
+            )
 
     async def frames(self) -> AsyncIterator[wire.SerialFrame]:
         while True:
             yield await self._queue.get()
 
     async def send_cmd(self, cmd: CmdMsg) -> None:
-        with self._pending_lock:
-            self._pending_cmd = cmd
+        """Write `cmd` to the wire now, off the event loop (pyserial's
+        write() blocks). The caller is expected to call this once per tick
+        of its own heartbeat with a freshly-built CmdMsg -- there is no
+        caching/resending here, so a dead caller means nothing is sent."""
+        payload = wire.encode_cmd(cmd)
+        frame = wire.encode_serial_frame(wire.SK_TX_TO_ROVER, 0, payload)
+        with self._ser_lock:
+            ser = self._ser
+        if ser is None:
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, ser.write, frame)
+        except (serial.SerialException, OSError) as exc:
+            log.debug("send_cmd write failed: %s", exc)
 
     def is_connected(self) -> bool:
         return self._connected.is_set()
@@ -212,7 +232,10 @@ class Link:
                         if frame:
                             self._handle_frame(frame)
             except (serial.SerialException, OSError) as exc:
-                log.warning("link lost (%s): %s", self._active_port, exc)
+                if self._stop.is_set():
+                    log.debug("link closed by stop() (%s): %s", self._active_port, exc)
+                else:
+                    log.warning("link lost (%s): %s", self._active_port, exc)
             except (AttributeError, ValueError):
                 # stop() closed the port (nulling pyserial's internal socket,
                 # or leaving its fd at -1) while this thread was mid-read;
@@ -237,32 +260,3 @@ class Link:
             return
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, sf)
-
-    # ------------------------------------------------------------- heartbeat ----
-
-    async def _heartbeat_loop(self) -> None:
-        loop = asyncio.get_running_loop()
-        next_tick = loop.time()
-        while True:
-            next_tick += self.HEARTBEAT_PERIOD_S
-            now = loop.time()
-            if next_tick < now - self.HEARTBEAT_PERIOD_S:
-                # fallen more than one period behind: resync instead of
-                # bursting through the missed ticks back-to-back.
-                next_tick = now + self.HEARTBEAT_PERIOD_S
-            await asyncio.sleep(max(0.0, next_tick - loop.time()))
-
-            with self._pending_lock:
-                cmd = self._pending_cmd
-            if cmd is None:
-                cmd = CmdMsg(t=0, seq=0, drive={"l": 0.0, "r": 0.0}, mode="idle", servo={})
-            payload = wire.encode_cmd(cmd)
-            frame = wire.encode_serial_frame(wire.SK_TX_TO_ROVER, 0, payload)
-            with self._ser_lock:
-                ser = self._ser
-            if ser is None:
-                continue
-            try:
-                ser.write(frame)
-            except (serial.SerialException, OSError) as exc:
-                log.debug("heartbeat write failed: %s", exc)

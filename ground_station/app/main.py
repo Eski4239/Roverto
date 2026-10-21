@@ -86,6 +86,12 @@ def create_app(args: argparse.Namespace) -> FastAPI:
     # this counter rather than staying latched forever.
     estop_remaining = 0
     estop_reset_pending = False
+    # F13/F20: one writer. Both the periodic heartbeat tick and an
+    # out-of-band immediate E-STOP send go through _build_and_send_cmd()
+    # under this lock, so two CmdMsg frames can never interleave on the
+    # wire and seq always increments exactly once per frame actually sent.
+    send_lock = asyncio.Lock()
+    heartbeat_wake = asyncio.Event()
 
     async def _ingest_loop() -> None:
         async for frame in link.frames():
@@ -113,9 +119,16 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             await asyncio.sleep(SCAN_TIMEOUT_POLL_S)
             state.poll_scan_timeouts(int(time.time() * 1000))
 
-    async def _cmd_heartbeat_loop() -> None:
+    async def _build_and_send_cmd(*, source: str = "heartbeat") -> None:
+        """Build one fresh CmdMsg from current intent and write it to the
+        wire now. Shared by the periodic heartbeat tick and the immediate
+        E-STOP send path (F13/F20) -- send_lock makes the two mutually
+        exclusive, so seq always advances by exactly one per frame actually
+        written and no two frames can interleave on the serial port.
+        `source` ("heartbeat" or "immediate") is recorded on `state` purely
+        for tests to verify which path actually delivered a given frame."""
         nonlocal estop_remaining, estop_reset_pending
-        while True:
+        async with send_lock:
             send_estop = estop_remaining > 0
             if send_estop:
                 estop_remaining -= 1
@@ -132,12 +145,24 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                 buzzer=last_ui_cmd["buzzer"],
                 request_hello=state.needs_hello_request(),
             )
+            state.last_sent_cmd_source = source  # tests only
             await link.send_cmd(cmd)
             sent_wall_ms = time.time() * 1000.0
             state.record_cmd_sent(cmd.seq, sent_wall_ms)
             session_logger.log_message("tx", cmd, sent_wall_ms)
             session_logger.log_raw_bytes("tx", wire.encode_cmd(cmd))
-            await asyncio.sleep(Link.HEARTBEAT_PERIOD_S)
+
+    async def _cmd_heartbeat_loop() -> None:
+        while True:
+            await _build_and_send_cmd(source="heartbeat")
+            heartbeat_wake.clear()
+            try:
+                # an immediate send (F20) already covered this tick's work;
+                # skip straight to waiting out the rest of the period instead
+                # of sending again right away.
+                await asyncio.wait_for(heartbeat_wake.wait(), timeout=Link.HEARTBEAT_PERIOD_S)
+            except asyncio.TimeoutError:
+                pass
 
     async def _camera_probe_loop() -> None:
         camera_url = config.get("camera", {}).get("camera_url")
@@ -243,14 +268,31 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                         controlling_ws = ws
                         last_ui_cmd["drive"] = {}
                         last_ui_cmd["servo"] = {}
+                        last_ui_cmd["buzzer"] = False
+                        # mode is intentionally left as-is: the new controller
+                        # inherits whatever mode the rover is currently in,
+                        # same as it inherits drive=0 (safe) and buzzer=off
+                        # (safe) -- unlike drive/buzzer there's no "neutral"
+                        # mode to reset to, and silently switching modes on
+                        # handoff (e.g. out of `assisted`) would itself be a
+                        # surprise to the operator (F1).
                     continue
                 if msg_type != "cmd":
                     continue
                 # estop/estop_reset are a safety exception: honored from any
                 # tab regardless of control state (docs/02 §6.9).
+                # estop_reset is NOT: F20 restricts it to the controlling
+                # tab -- only estop itself bypasses control gating.
                 if data.get("estop"):
                     estop_remaining = 3
-                if data.get("estop_reset"):
+                    # F13/F20: don't wait for the next heartbeat tick --
+                    # send this one immediately. It counts as the 1st of
+                    # the 3 CMD_ESTOP-carrying CmdMsgs; the next 2 periodic
+                    # ticks (now rescheduled a full period out) carry the
+                    # rest, matching docs/02 §6.9's "next 3" exactly.
+                    await _build_and_send_cmd(source="immediate")
+                    heartbeat_wake.set()
+                if data.get("estop_reset") and ws is controlling_ws:
                     estop_reset_pending = True
                 if ws is not controlling_ws:
                     continue
