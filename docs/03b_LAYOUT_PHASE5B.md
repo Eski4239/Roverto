@@ -15,10 +15,13 @@ format, rebuild in the existing plain HTML/CSS/JS of `ground_station/app/web/`.
    `hw.camera.present == false` / mapping not built ("Camera · not installed — grows into a panel
    when fitted"; "Map · not built yet (mapping on hold) — sweep shown in Sonar"). When camera is
    present it becomes a full panel (Drive preset: main area; other presets: a medium card).
-3. **Readable numbers.** Values in JetBrains Mono (fallback ui-monospace), `font-variant-numeric:
-   tabular-nums`, 28 px in tiles (40 px in Science), unit 14–16 px muted, label 11 px uppercase
-   letter-spaced muted. One status dot per value (green/amber/red from config.toml thresholds;
-   grey when stale). Fonts vendored locally (offline!) — no Google Fonts link at runtime.
+3. **Readable numbers.** Values in the system monospace stack (`ui-monospace, Consolas, Menlo,
+   monospace`), `font-variant-numeric: tabular-nums`, 28 px in tiles (40 px in Science), unit 14–16 px
+   muted, label 11 px uppercase letter-spaced muted. One status dot per value (green/amber/red from
+   config.toml thresholds; grey when stale). No custom web font (F15/F24, 2026-10-21): vendoring
+   JetBrains Mono needs network access and font-subsetting tooling this environment doesn't have, and
+   serving it unvendored would violate CLAUDE.md rule 7 (offline, no runtime CDN); the system
+   monospace stack already gives tabular/fixed-width numerals on every target platform.
 4. **Presets** in the top bar as a segmented control: **Drive · Science · Systems** (default
    Systems). Choice remembered in localStorage (wrapped in try/catch). Keyboard: 1/2/3 switch preset
    only when focus isn't in an input.

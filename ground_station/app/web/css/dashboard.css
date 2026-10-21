@@ -13,19 +13,6 @@
   --bad: #F85149;
 }
 
-@font-face {
-  font-family: "JetBrains Mono";
-  src: url("/static/vendor/fonts/JetBrainsMono-Regular.woff2") format("woff2");
-  font-weight: 400;
-  font-display: swap;
-}
-@font-face {
-  font-family: "JetBrains Mono";
-  src: url("/static/vendor/fonts/JetBrainsMono-Bold.woff2") format("woff2");
-  font-weight: 700;
-  font-display: swap;
-}
-
 * { box-sizing: border-box; }
 
 html, body {
@@ -35,7 +22,12 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  /* System monospace stack -- no vendored web font (docs/03b §1.3): every
+     listed fallback already gives tabular/fixed-width numerals on its
+     platform, and avoids the offline-vendoring problem entirely (CLAUDE.md
+     hard rule 7, "vendor all frontend libraries locally" -- simplest to
+     just not depend on a font that needs vendoring at all). */
+  font-family: ui-monospace, Consolas, Menlo, monospace;
   font-size: 14px;
   overflow: hidden;
 }
@@ -532,11 +524,18 @@ html, body {
   gap: 0.4rem;
   font-size: 0.8rem;
   padding: 2px 0;
+  min-width: 0;
+  /* .expand-btn is absolutely positioned (top:8px, height:32px) relative
+     to this row -- without room for it the row's own content (one short
+     text line) collapses to ~17px tall while the button still extends to
+     40px, so the row's scrollHeight exceeds its clientHeight (F15). */
+  min-height: 40px;
 }
-.motor-row .k { color: var(--muted); width: 1rem; }
+.motor-row .k { color: var(--muted); width: 1rem; flex-shrink: 0; }
 .motor-bar {
   position: relative;
   flex: 1;
+  min-width: 0;
   height: 10px;
   border: 1px solid var(--border-strong);
   border-radius: 2px;
@@ -553,15 +552,27 @@ html, body {
 .motor-bar-fill.rpm { background: var(--muted); }
 .motor-row .v { width: 3rem; text-align: right; }
 
-.attitude-widget { display: flex; align-items: center; gap: 0.5rem; }
+.attitude-widget { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .attitude-horizon, .attitude-compass {
   width: 56px;
   height: 56px;
   color: var(--accent);
   flex-shrink: 0;
 }
-.attitude-readout { display: flex; flex-direction: column; gap: 0.1rem; font-size: 0.8rem; flex: 1; }
-.attitude-readout .row { position: relative; display: flex; justify-content: space-between; gap: 0.5rem; }
+.attitude-readout { display: flex; flex-direction: column; gap: 0.1rem; font-size: 0.8rem; flex: 1; min-width: 0; }
+.attitude-readout .row {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+  /* same reasoning as .motor-row above -- rows with an expand-btn need
+     room for its absolute top:8px/height:32px footprint (F15); rows
+     without one (Yaw) just end up a little taller than their text, which
+     is harmless and keeps all three rows visually aligned. */
+  min-height: 40px;
+}
+.attitude-readout .row .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .attitude-readout .k { color: var(--muted); }
 
 .sonar-widget { display: flex; align-items: center; gap: 0.5rem; }
