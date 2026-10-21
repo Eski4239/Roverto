@@ -229,3 +229,66 @@ async def _run_lost_state_no_scroll(base_url: str) -> None:
 async def test_lost_state_no_inner_scroll_and_no_console_errors(silent_rover_backend):
     base_url = silent_rover_backend
     await asyncio.wait_for(_run_lost_state_no_scroll(base_url), timeout=60.0)
+
+
+async def _run_space_always_triggers_estop(base_url: str) -> None:
+    """F2: SPACE must always send E-STOP regardless of what has focus (per
+    docs/03b §1 "SPACE key hint"), and never also activate whatever control
+    happened to have focus (dashboard.js's handler calls preventDefault()
+    unconditionally before checking roverEstopActive, so the keystroke
+    never reaches the focused element's own default action).
+
+    Tested with focus on two of today's real focusable controls: the
+    E-STOP button itself, and a preset-switch button. The speed-limit
+    slider mentioned in the original audit brief is `disabled` until
+    Phase 6 (controlpanel.js) and therefore cannot receive focus at all
+    yet -- revisit this test once Phase 6 removes that `disabled` so the
+    slider is included too."""
+    async with playwright_async.async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page(viewport=VIEWPORT)
+            await page.goto(base_url)
+            await page.wait_for_timeout(500)
+
+            # always start on "systems" so a stray preset-switch (if the
+            # bug were present) is actually observable as a change.
+            await page.click('[data-preset="systems"]')
+            await page.wait_for_timeout(100)
+
+            for focus_selector in ("#estop-btn", '[data-preset="science"]'):
+                # make sure E-STOP starts inactive before each sub-case
+                if await page.eval_on_selector("#estop-btn", "el => el.classList.contains('latched')"):
+                    await page.click("#estop-btn")
+                    await page.wait_for_timeout(300)
+
+                await page.focus(focus_selector)
+                focused_before = await page.evaluate(
+                    "sel => document.activeElement === document.querySelector(sel)", focus_selector
+                )
+                assert focused_before, f"{focus_selector} did not actually receive focus"
+
+                await page.keyboard.press("Space")
+                await page.wait_for_selector("#estop-btn.latched", timeout=2_000)
+
+                # the focused element's own default Space action must not
+                # also have fired -- for the preset button that would mean
+                # switching the active preset, which is directly observable.
+                active_preset = await page.evaluate(
+                    "() => document.querySelector('.preset-panel:not([hidden])').dataset.preset"
+                )
+                assert active_preset == "systems", (
+                    f"preset changed to {active_preset!r} after SPACE with "
+                    f"{focus_selector} focused -- its own default action fired too"
+                )
+
+                # clean up for the next sub-case
+                await page.click("#estop-btn")
+                await page.wait_for_timeout(300)
+        finally:
+            await browser.close()
+
+
+async def test_space_always_triggers_estop_regardless_of_focus(running_backend):
+    base_url, _ = running_backend
+    await asyncio.wait_for(_run_space_always_triggers_estop(base_url), timeout=30.0)
