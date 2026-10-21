@@ -173,6 +173,7 @@ async def test_no_wd_stop_with_zero_ui_clients():
     stays satisfied (no repeated/late WD_STOP once the link is up)."""
     sim_server, sim_port = await _start_simulator()
     app_server, serve_task, app_port = await _start_app(sim_port)
+    gs_state = app_server._gs_app.state.ground_state
     try:
         await asyncio.sleep(1.0)  # well past the 500ms watchdog, no UI client ever connects
         async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws:
@@ -181,7 +182,10 @@ async def test_no_wd_stop_with_zero_ui_clients():
             assert telem is not None
             assert telem["state"]["wd_ok"] is True
             assert telem["state"]["last_cmd_age_ms"] < 500
-            wd_stop_count_before = sum(1 for e in snap["events"] if e["code"] == "WD_STOP")
+            # F9: the snapshot only carries recent_events (last 10) now, not
+            # the full cumulative log -- check the backend's own full
+            # self.events deque directly instead, same semantics as before.
+            wd_stop_count_before = sum(1 for e in gs_state.events if e.code == "WD_STOP")
 
             # Watch for another second: no *additional* WD_STOP should fire
             # once the heartbeat has been running steadily (events is a
@@ -191,7 +195,7 @@ async def test_no_wd_stop_with_zero_ui_clients():
             while time.monotonic() < deadline:
                 snap = await _recv_snapshot(ws, timeout=1.5)
                 assert snap["telem"]["state"]["wd_ok"] is True
-                wd_stop_count_now = sum(1 for e in snap["events"] if e["code"] == "WD_STOP")
+                wd_stop_count_now = sum(1 for e in gs_state.events if e.code == "WD_STOP")
                 assert wd_stop_count_now == wd_stop_count_before
     finally:
         await _stop_app(app_server, serve_task)

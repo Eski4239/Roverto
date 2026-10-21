@@ -580,12 +580,17 @@ class GroundState:
         if hello_dump is not None and self.camera is not None:
             hello_dump["hw"]["camera"] = self.camera.model_dump()
 
+        # F9: only the last 10 go over the wire, every 10Hz tick -- the full
+        # self.events deque (up to 200) used to be re-sent in full on every
+        # snapshot too, duplicating recent_events for no consumer (the full
+        # filterable log view is Phase 7, docs/06; nothing today reads
+        # anything but recent_events -- see eventlog.js). self.events stays
+        # as the backend's own full history for when Phase 7 needs it.
         recent_events = list(self.events)[-10:][::-1]  # newest first
         return {
             "hello": hello_dump,
             "telem": self.telem.model_dump() if self.telem else None,
             "scan": self.scan.model_dump() if self.scan else None,
-            "events": [e.model_dump() for e in self.events],
             "recent_events": [
                 {"t": e.t, "level": e.level, "code": e.code, "msg": e.msg}
                 for e in recent_events

@@ -201,6 +201,29 @@ def test_ground_state_ingest_telem_updates_snapshot():
     assert snap["telem"]["state"]["mode"] == "idle"
 
 
+def test_f9_snapshot_omits_full_events_list():
+    """F9: the snapshot used to resend the full self.events deque (up to
+    200 entries) on every 10Hz tick, duplicating recent_events (the last
+    10, which is all any current consumer -- eventlog.js -- reads). The
+    full list is gone from the wire payload; recent_events still works,
+    and self.events still holds the full history internally (for a future
+    Phase 7 full-log view)."""
+    state = GroundState()
+    for i in range(15):
+        state.ingest(_telem(i, t=i * 100), rssi=-55, recv_wall_ms=1000.0 + i)
+
+    snap = state.snapshot(now_wall_ms=2000.0, connected=True, serial_port="COM5")
+    assert "events" not in snap
+    assert "recent_events" in snap
+    assert len(snap["recent_events"]) <= 10
+
+    # self.events (backend-internal, not serialized) still has the full
+    # history for the events this test actually generated via restart/etc
+    # -- here there's no restart, so just confirm the attribute exists and
+    # is independent of the snapshot's recent_events slicing.
+    assert hasattr(state, "events")
+
+
 def test_snapshot_history_and_session_minmax_track_env_values():
     state = GroundState()
     state.ingest(
