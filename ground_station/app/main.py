@@ -97,22 +97,30 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         async for frame in link.frames():
             recv_wall_ms = time.time() * 1000.0
             session_logger.log_raw_bytes("rx", frame.payload)
-            if frame.kind == wire.SK_RX_FROM_ROVER:
-                try:
-                    decoded = wire.decode_message(frame.payload)
-                except wire.WireError as exc:
-                    log.debug("dropping undecodable payload: %s", exc)
-                    continue
-                if isinstance(decoded, tuple):
-                    scan, part, parts = decoded
-                    state.ingest_scan_fragment(scan, part, parts, int(recv_wall_ms))
-                    session_logger.log_message("rx", scan, recv_wall_ms)
-                else:
-                    state.ingest(decoded, rssi=frame.rssi, recv_wall_ms=recv_wall_ms)
-                    session_logger.log_message("rx", decoded, recv_wall_ms)
-            elif frame.kind == wire.SK_BRIDGE_STATUS:
-                status = wire.decode_bridge_status(frame.payload)
-                state.ingest(status, rssi=frame.rssi, recv_wall_ms=recv_wall_ms)
+            try:
+                if frame.kind == wire.SK_RX_FROM_ROVER:
+                    try:
+                        decoded = wire.decode_message(frame.payload)
+                    except wire.WireError as exc:
+                        log.debug("dropping undecodable payload: %s", exc)
+                        continue
+                    if isinstance(decoded, tuple):
+                        scan, part, parts = decoded
+                        state.ingest_scan_fragment(scan, part, parts, int(recv_wall_ms))
+                        session_logger.log_message("rx", scan, recv_wall_ms)
+                    else:
+                        state.ingest(decoded, rssi=frame.rssi, recv_wall_ms=recv_wall_ms)
+                        session_logger.log_message("rx", decoded, recv_wall_ms)
+                elif frame.kind == wire.SK_BRIDGE_STATUS:
+                    status = wire.decode_bridge_status(frame.payload)
+                    state.ingest(status, rssi=frame.rssi, recv_wall_ms=recv_wall_ms)
+            except Exception:  # noqa: BLE001 -- F3: never let one bad frame
+                # kill telemetry ingestion for the rest of the session. An
+                # exception here previously propagated out of this task,
+                # which asyncio would just log as "unhandled task exception"
+                # and the task would die silently -- no more TELEM would
+                # ever reach the UI again, with no visible error.
+                log.exception("unexpected error ingesting frame (kind=%s), dropping it", frame.kind)
 
     async def _scan_timeout_loop() -> None:
         while True:

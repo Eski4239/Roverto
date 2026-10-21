@@ -487,3 +487,56 @@ async def test_heartbeat_task_death_trips_watchdog_not_stale_resend():
         await _stop_app(app_server, serve_task)
         sim_server.close()
         await sim_server.wait_closed()
+
+
+async def test_ingest_loop_survives_unexpected_exception():
+    """F3: an exception raised while processing one decoded frame (not a
+    WireError -- those are already handled -- but something unexpected in
+    state.ingest() itself) must not kill _ingest_loop for the rest of the
+    session. Fault-inject by making GroundState.ingest raise exactly once,
+    then confirm TELEM keeps flowing afterward."""
+    sim_server, sim_port = await _start_simulator()
+    app_server, serve_task, app_port = await _start_app(sim_port)
+    gs_state = app_server._gs_app.state.ground_state
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{app_port}/ws/ui") as ws:
+            # let at least one real TELEM arrive first.
+            deadline = time.monotonic() + TIMEOUT
+            while time.monotonic() < deadline:
+                snap = await _recv_snapshot(ws)
+                if snap.get("telem") is not None:
+                    break
+            else:
+                pytest.fail("never received an initial TELEM")
+
+            telem_before = snap["telem"]
+
+            real_ingest = gs_state.ingest
+            raised = {"done": False}
+
+            def _flaky_ingest(*args, **kwargs):
+                if not raised["done"]:
+                    raised["done"] = True
+                    raise RuntimeError("synthetic fault for F3")
+                return real_ingest(*args, **kwargs)
+
+            gs_state.ingest = _flaky_ingest
+
+            # the next TELEM to arrive hits the fault; _ingest_loop must
+            # survive it and keep processing the ones after.
+            seen_new_telem = False
+            deadline = time.monotonic() + TIMEOUT
+            while time.monotonic() < deadline:
+                snap = await _recv_snapshot(ws)
+                telem = snap.get("telem")
+                if telem is not None and telem != telem_before:
+                    seen_new_telem = True
+                    break
+            assert seen_new_telem, (
+                "_ingest_loop stopped delivering TELEM after an exception in "
+                "state.ingest() -- it should log and continue, not die"
+            )
+    finally:
+        await _stop_app(app_server, serve_task)
+        sim_server.close()
+        await sim_server.wait_closed()
