@@ -153,3 +153,88 @@ def test_lidar_scan_missing_fragment_yields_nulls_after_timeout():
     assert all(pt[1] is None for pt in missing)
     present = result.pts[0:180] + result.pts[270:360]
     assert all(pt[1] is not None for pt in present)
+
+
+def test_f23_crc_bad_telem_frame_is_rejected_cleanly():
+    """F23: GS receiving a CRC-bad (or otherwise corrupted) TELEM frame --
+    decode_serial_frame must raise wire.WireError (dropped, counted by
+    main.py's _ingest_loop debug log, F3's try/except), never crash and
+    never silently decode garbage as if it were valid telem."""
+    msg = TelemMsg(
+        t=500, seq=7,
+        env=TelemEnv(), light=TelemLight(), pwr=TelemPwr(),
+        mot=TelemMot(pwm_l=0, pwm_r=0), odom=TelemOdom(),
+        imu=TelemImu(), sonar=TelemSonar(),
+        state=TelemState(mode="idle", estop=False, wd_ok=True, last_cmd_age_ms=0),
+        sys=TelemSys(rssi_dbm=-60, heap_b=1000, uptime_s=1, loop_hz=100),
+    )
+    payload = wire.encode_telem(msg)
+    good_frame = wire.encode_serial_frame(wire.SK_RX_FROM_ROVER, rssi=-55, payload=payload)
+
+    # the valid frame decodes and round-trips correctly (sanity baseline).
+    good_sf = wire.decode_serial_frame(good_frame[:-1])  # strip the \x00 delimiter
+    good_msg = wire.decode_message(good_sf.payload)
+    assert good_msg.seq == 7
+
+    # corrupt one payload byte (after COBS decoding + CRC check, this must
+    # fail CRC validation -- it's deep enough into the frame that COBS
+    # framing itself still parses, isolating the CRC check specifically).
+    corrupted = bytearray(good_frame[:-1])
+    corrupted[len(corrupted) // 2] ^= 0xFF
+    try:
+        wire.decode_serial_frame(bytes(corrupted))
+        assert False, "corrupted frame should have failed CRC validation"
+    except wire.WireError:
+        pass  # expected -- this is what main.py's _ingest_loop/Link._handle_frame catch
+
+
+async def test_f23_link_survives_crc_bad_frame_and_keeps_delivering_good_ones():
+    """F23 (integration): a CRC-bad frame arriving on the wire must not
+    wedge Link -- the next good frame after it must still be delivered."""
+    import asyncio
+    import socket
+
+    from ground_station.app.link import Link
+
+    def _free_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    port = _free_port()
+
+    msg = TelemMsg(
+        t=500, seq=7,
+        env=TelemEnv(), light=TelemLight(), pwr=TelemPwr(),
+        mot=TelemMot(pwm_l=0, pwm_r=0), odom=TelemOdom(),
+        imu=TelemImu(), sonar=TelemSonar(),
+        state=TelemState(mode="idle", estop=False, wd_ok=True, last_cmd_age_ms=0),
+        sys=TelemSys(rssi_dbm=-60, heap_b=1000, uptime_s=1, loop_hz=100),
+    )
+    good_frame = wire.encode_serial_frame(
+        wire.SK_RX_FROM_ROVER, rssi=-55, payload=wire.encode_telem(msg),
+    )
+    corrupted = bytearray(good_frame)
+    corrupted[len(corrupted) // 2] ^= 0xFF
+
+    async def _handler(reader, writer):
+        writer.write(bytes(corrupted))  # CRC-bad frame first
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        writer.write(good_frame)  # then a good one
+        await writer.drain()
+        await asyncio.sleep(1.0)  # keep the connection open while Link reads
+        writer.close()
+
+    server = await asyncio.start_server(_handler, "127.0.0.1", port)
+    link = Link(f"socket://127.0.0.1:{port}", reconnect_retry_s=0.2)
+    try:
+        await link.start()
+        frame = await asyncio.wait_for(link.frames().__anext__(), timeout=2.0)
+        assert frame.kind == wire.SK_RX_FROM_ROVER
+        decoded = wire.decode_message(frame.payload)
+        assert decoded.seq == 7, "the good frame after the corrupted one was not delivered"
+    finally:
+        await link.stop()
+        server.close()
+        await server.wait_closed()
