@@ -150,9 +150,37 @@ def test_bridge_status_roundtrip():
     assert re_encoded == raw
 
 
+def test_joystick_roundtrip():
+    raw = _hex("joystick")
+    state = wire.decode_joystick(raw)
+    expected = EXPECTED["joystick"]
+    assert state.lx == expected["lx"]
+    assert state.ly == expected["ly"]
+    assert state.rx == expected["rx"]
+    assert state.ry == expected["ry"]
+    assert state.buttons == expected["buttons"]
+    assert state.seq == expected["seq"]
+
+    re_encoded = wire.encode_joystick(state)
+    assert re_encoded == raw
+
+
 def test_serial_frame_telem():
     raw = _hex("serial_frame_telem")
     expected = EXPECTED["serial_frame_telem"]
+    assert raw[-1] == 0x00
+    frame = wire.decode_serial_frame(raw[:-1])
+    assert frame.kind == expected["kind"]
+    assert frame.rssi == expected["rssi"]
+    assert frame.payload == _hex(expected["payload_file"].removesuffix(".hex"))
+
+    re_encoded = wire.encode_serial_frame(frame.kind, frame.rssi, frame.payload)
+    assert re_encoded == raw
+
+
+def test_serial_frame_joystick():
+    raw = _hex("serial_frame_joystick")
+    expected = EXPECTED["serial_frame_joystick"]
     assert raw[-1] == 0x00
     frame = wire.decode_serial_frame(raw[:-1])
     assert frame.kind == expected["kind"]

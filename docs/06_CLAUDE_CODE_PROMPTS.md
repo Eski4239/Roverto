@@ -115,6 +115,8 @@ buzzer. Keys act only while the page is focused; blur/close -> drive 0. E-STOP s
 on the next 3 CmdMsgs immediately (don't wait for the 10 Hz tick); reset needs a confirm.
 Show wd_ok and last_cmd_age_ms. Simulator tests: stop CmdMsg -> WD_STOP within 600 ms; estop
 latched ignores drive until estop_reset.
+(Once Phase 10 lands, SK_JOYSTICK is another input source feeding this same CmdMsg-generation path
+alongside WASD — no behavior to build yet, just merge both sources when that revisit happens.)
 ```
 ✔ Check: drive the simulator from the browser; close the tab → motors 0.
 
@@ -162,7 +164,10 @@ Follow docs/01 §2 and §5.2 and docs/02 §4 exactly:
 - ESP-NOW RX callback (new esp_now_recv_info_t signature) -> copy bytes + rx_ctrl->rssi into a
   FreeRTOS queue; loop() emits SK_RX_FROM_ROVER frames. Ignore frames from unknown MACs.
 - SK_BRIDGE_STATUS at 1 Hz; LED GPIO2 blinks on RX; SK_BRIDGE_LOG for debug text.
-- The bridge must NOT decode telemetry or generate commands.
+- Read the two joystick modules per docs/04 §1b: analogRead on the four VRx/VRy pins, digitalRead
+  (INPUT_PULLUP) on the two SW pins; emit SK_JOYSTICK frames (JoystickState) at 50 Hz.
+- The bridge must NOT decode telemetry or generate commands — this applies to joystick input too:
+  it only reports raw stick state, never computes drive values.
 secrets.example.h committed, secrets.h gitignored. Explain flashing and how to find each board's MAC.
 Also write tools/bridge_echo_test.py: opens the port, checks BRIDGE_STATUS arrives and CRCs are valid.
 ```

@@ -23,7 +23,10 @@
     "servo":{"mode":"sweep","angle_deg":90},"estop":false,"estop_reset":false,"buzzer":false,
     "request_hello":false,"goto":null},
   "bridge_status": {"uptime_ms":60000,"rx_count":600,"tx_ok":598,"tx_fail":2,"channel":11,"last_rssi":-58,"rover_paired":true},
+  "joystick": {"lx":2048,"ly":1900,"rx":2100,"ry":2048,"buttons":0,"seq":7},
   "serial_frame_telem": {"_note":"COBS frame incl. trailing 0x00. Decodes to kind=1 (RX_FROM_ROVER), rssi=-58, payload = telem.hex, valid CRC-16/CCITT-FALSE.",
     "kind":1,"rssi":-58,"payload_file":"telem.hex"},
+  "serial_frame_joystick": {"_note":"COBS frame incl. trailing 0x00. Decodes to kind=5 (SK_JOYSTICK), rssi=0 (unused for this kind), payload = joystick.hex, valid CRC-16/CCITT-FALSE.",
+    "kind":5,"rssi":0,"payload_file":"joystick.hex"},
   "crc16_check": {"input_ascii":"123456789","crc":"0x29B1"}
 }

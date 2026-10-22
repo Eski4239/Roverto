@@ -75,6 +75,9 @@ int main(int argc, char** argv) {
   BridgeStatus b{}; b.uptime_ms = 60000; b.rx_count = 600; b.tx_ok = 598; b.tx_fail = 2; b.channel = 11; b.last_rssi = -58; b.rover_paired = 1;
   dump("bridge_status", &b, sizeof b);
 
+  JoystickState j{}; j.lx = 2048; j.ly = 1900; j.rx = 2100; j.ry = 2048; j.buttons = 0; j.seq = 7;
+  dump("joystick", &j, sizeof j);
+
   // Full serial frame: telem as received by the bridge with RSSI -58
   std::vector<uint8_t> raw = {SK_RX_FROM_ROVER, (uint8_t)(int8_t)-58};
   const uint8_t* tp = (const uint8_t*)&t; raw.insert(raw.end(), tp, tp + sizeof t);
@@ -82,6 +85,14 @@ int main(int argc, char** argv) {
   raw.push_back(crc & 0xFF); raw.push_back(crc >> 8);
   std::vector<uint8_t> fr = cobs(raw); fr.push_back(0x00);
   dump("serial_frame_telem", fr.data(), fr.size());
+
+  // Full serial frame: joystick state reported by the bridge, no RSSI meaning (0)
+  std::vector<uint8_t> jraw = {SK_JOYSTICK, 0};
+  const uint8_t* jp = (const uint8_t*)&j; jraw.insert(jraw.end(), jp, jp + sizeof j);
+  uint16_t jcrc = crc16_ccitt_false(jraw.data(), jraw.size());
+  jraw.push_back(jcrc & 0xFF); jraw.push_back(jcrc >> 8);
+  std::vector<uint8_t> jfr = cobs(jraw); jfr.push_back(0x00);
+  dump("serial_frame_joystick", jfr.data(), jfr.size());
 
   const char* chk = "123456789";
   printf("crc16 check(\"123456789\") = 0x%04X (expect 0x29B1)\n", crc16_ccitt_false((const uint8_t*)chk, 9));
