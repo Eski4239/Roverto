@@ -151,6 +151,7 @@ enum SerialKind : uint8_t {
   SK_TX_TO_ROVER   = 0x02,  // laptop -> bridge: payload = one radio message to send, rssi = 0
   SK_BRIDGE_STATUS = 0x03,  // bridge -> laptop, 1 Hz: payload = BridgeStatus
   SK_BRIDGE_LOG    = 0x04,  // bridge -> laptop: payload = ASCII text
+  SK_JOYSTICK      = 0x05,  // bridge -> laptop, 50 Hz: payload = JoystickState (bridge only reports; never generates commands)
 };
 
 #pragma pack(push, 1)
@@ -165,14 +166,24 @@ struct BridgeStatus {       // 19 bytes
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct JoystickState {      // 10 bytes — raw thumbstick state read by ground_bridge, serial-only
+  uint16_t lx, ly;          // left stick raw ADC, 0-4095
+  uint16_t rx, ry;          // right stick raw ADC, 0-4095
+  uint8_t  buttons;         // bit0 = left SW pressed, bit1 = right SW pressed (1 = pressed)
+  uint8_t  seq;             // wraps 0-255, bridge-side frame counter for this message kind
+};
+#pragma pack(pop)
+
 #ifdef __cplusplus
-static_assert(sizeof(MsgHeader)    == 10,  "MsgHeader size");
-static_assert(sizeof(HelloMsg)     == 38,  "HelloMsg size");
-static_assert(sizeof(TelemMsg)     == 129, "TelemMsg size");
-static_assert(sizeof(ScanMsg)      == 231, "ScanMsg size");
-static_assert(sizeof(EventMsg)     == 72,  "EventMsg size");
-static_assert(sizeof(AckMsg)       == 13,  "AckMsg size");
-static_assert(sizeof(CmdMsg)       == 30,  "CmdMsg size");
-static_assert(sizeof(BridgeStatus) == 19,  "BridgeStatus size");
+static_assert(sizeof(MsgHeader)     == 10,  "MsgHeader size");
+static_assert(sizeof(HelloMsg)      == 38,  "HelloMsg size");
+static_assert(sizeof(TelemMsg)      == 129, "TelemMsg size");
+static_assert(sizeof(ScanMsg)       == 231, "ScanMsg size");
+static_assert(sizeof(EventMsg)      == 72,  "EventMsg size");
+static_assert(sizeof(AckMsg)        == 13,  "AckMsg size");
+static_assert(sizeof(CmdMsg)        == 30,  "CmdMsg size");
+static_assert(sizeof(BridgeStatus)  == 19,  "BridgeStatus size");
+static_assert(sizeof(JoystickState) == 10,  "JoystickState size");
 static_assert(sizeof(ScanMsg) <= ESPNOW_MAX_PAYLOAD, "ScanMsg too big for ESP-NOW");
 #endif

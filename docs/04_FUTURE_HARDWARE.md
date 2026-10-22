@@ -34,6 +34,23 @@ Reserve these now so future hardware never forces a rewire. Verify against your 
 | LiDAR RX (UART2) [future] | 16      | LD06 TX → GPIO16; LD06 needs 5 V, ~180 mA |
 | Spare                 | 17, 14, 15, 2 | |
 
+## 1b. Pin reservation (ground_bridge joysticks)
+These GPIOs are on the **ground_bridge** ESP32, a separate board from `rover_main` — numbers
+overlapping with the §1 table above (e.g. 32/33/34) are not a wiring conflict, since each table
+describes a different physical device.
+
+| Function      | GPIO | Notes |
+|---------------|------|-------|
+| VRy (L stick) | 34   | ADC1, input-only |
+| VRy (R stick) | 35   | ADC1, input-only |
+| VRx (L stick) | 32   | ADC1 |
+| VRx (R stick) | 33   | ADC1 |
+| SW (L stick)  | 25   | `INPUT_PULLUP`, pressed = LOW |
+| SW (R stick)  | 26   | `INPUT_PULLUP`, pressed = LOW |
+
+Sticks powered from **3V3, not 5V**. Optional fail-safe per VR pin: 1 MΩ to 3V3 + 1 MΩ to GND, so a
+broken signal wire reads centre (~2048) instead of floating to a rail.
+
 ## 2. Implementation steps
 
 ### A. BME280 (now)

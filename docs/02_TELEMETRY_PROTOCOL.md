@@ -126,6 +126,7 @@ kind    = 0x01 RX_FROM_ROVER   bridge→laptop  payload = one wire message, rssi
           0x02 TX_TO_ROVER     laptop→bridge  payload = one wire message (CmdMsg), rssi = 0
           0x03 BRIDGE_STATUS   bridge→laptop  payload = BridgeStatus (19 B), 1 Hz
           0x04 BRIDGE_LOG      bridge→laptop  payload = ASCII text (debug)
+          0x05 SK_JOYSTICK     bridge→laptop  payload = JoystickState (10 B), 50 Hz
 crc16   = CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection, xorout 0) over kind|rssi|payload
 ```
 - Arduino side: the `PacketSerial` library does COBS + 0x00 delimiting.
@@ -143,6 +144,7 @@ crc16   = CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection, xorout 0)
 | AckMsg | `<BBBBHIHB` | 13 |
 | CmdMsg | `<BBBBHIffBBBBff` | 30 |
 | BridgeStatus | `<IIIIBbB` | 19 |
+| JoystickState | `<HHHHBB` | 10 |
 
 Golden-bytes tests: `tests/golden/*.hex` are generated **from the real C structs** by
 `tools/golden_gen.cpp` (independent of wire.py); `tests/golden/expected.json` is the JSON each must
@@ -195,3 +197,8 @@ Regenerate: `g++ -std=c++17 -I firmware/common tools/golden_gen.cpp -o golden_ge
     back by more than 500 ms (except a 49.7-day wrap), or on a HELLO with `seq == 0`, or on a
     backward `seq` jump ≥ 1000; it then resets loss/RTT/scan state and logs `ROVER_RESTART`. If the
     GS has TELEM but no HELLO since the restart, it sets `CMD_REQUEST_HELLO` until one arrives.
+12. **Joystick reporting (bridge stays dumb)** — `SK_JOYSTICK` carries the two thumbstick modules'
+    raw ADC/button state as read by `ground_bridge`. The bridge only reports this state; it never
+    computes drive values or generates `CmdMsg` itself — that conversion happens entirely in the
+    ground-station backend, same as keyboard input. This has no effect on the ESP-NOW radio
+    protocol to the rover.

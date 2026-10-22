@@ -133,6 +133,9 @@ CMD_SIZE = struct.calcsize(CMD_FMT)  # 30
 BRIDGE_STATUS_FMT = "<IIIIBbB"
 BRIDGE_STATUS_SIZE = struct.calcsize(BRIDGE_STATUS_FMT)  # 19
 
+JOYSTICK_FMT = "<HHHHBB"
+JOYSTICK_SIZE = struct.calcsize(JOYSTICK_FMT)  # 10
+
 assert HEADER_SIZE == 10
 assert HELLO_SIZE == 38
 assert TELEM_SIZE == 129
@@ -495,12 +498,35 @@ def encode_bridge_status(s: BridgeStatus) -> bytes:
     )
 
 
+# ------------------------------------------ JoystickState (GS-only) ----
+
+
+@dataclass
+class JoystickState:
+    lx: int
+    ly: int
+    rx: int
+    ry: int
+    buttons: int
+    seq: int
+
+
+def decode_joystick(b: bytes) -> JoystickState:
+    lx, ly, rx, ry, buttons, seq = struct.unpack_from(JOYSTICK_FMT, b, 0)
+    return JoystickState(lx, ly, rx, ry, buttons, seq)
+
+
+def encode_joystick(j: JoystickState) -> bytes:
+    return struct.pack(JOYSTICK_FMT, j.lx, j.ly, j.rx, j.ry, j.buttons, j.seq)
+
+
 # ---------------------------------------- Serial framing — docs/02 §4 ----
 
 SK_RX_FROM_ROVER = 0x01
 SK_TX_TO_ROVER = 0x02
 SK_BRIDGE_STATUS = 0x03
 SK_BRIDGE_LOG = 0x04
+SK_JOYSTICK = 0x05
 
 
 def _crc16_ccitt_false(data: bytes) -> int:
