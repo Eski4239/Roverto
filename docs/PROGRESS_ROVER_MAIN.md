@@ -154,6 +154,11 @@ rover_main plan (each step is flashed and tested on its own before the next):
 
 ## 5. Session log (newest first)
 
+### 2026-10-23 — GS side: Phase 6 merged
+Manual driving: two thumbsticks (tank drive) wired to the ground_bridge, reported via SK_JOYSTICK;
+laptop maps them to CmdMsg. Stick button = E-STOP. Keyboard backup. Next GS: Phase 10 ground_bridge
+firmware (reads the sticks, needed for R3).
+
 ### 2026-10-23 — GS side: Phase 6 second live-test follow-up (Pablo + Claude)
 Re-tested the two items reported from a live screenshot (input=Keyboard, simulator
 without any joystick flags, holding D):
