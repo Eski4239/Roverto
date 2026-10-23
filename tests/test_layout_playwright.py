@@ -310,6 +310,156 @@ async def test_space_always_triggers_estop_regardless_of_focus(running_backend):
     await asyncio.wait_for(_run_space_always_triggers_estop(base_url), timeout=30.0)
 
 
+# ------------------------------------------------------ Phase 6 Drive preset ----
+
+@pytest.fixture
+async def joystick_demo_backend() -> AsyncIterator[str]:
+    """--joystick-demo: pure driving pattern (centre/forward/turn/reverse),
+    never touches the button -- used here only to get the rover actually
+    moving/the sonar changing; the test itself drives via keyboard, not
+    the joystick, matching the live-test instructions."""
+    sim_server, sim_port = await _start_simulator(hw_flags=["--joystick-demo"])
+    backend = await _start_backend(sim_port)
+    base_url = f"http://127.0.0.1:{backend._gs_port}"
+    try:
+        yield base_url
+    finally:
+        await _stop(backend)
+        sim_server.close()
+        try:
+            await asyncio.wait_for(sim_server.wait_closed(), timeout=TEARDOWN_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _run_drive_preset_updates_while_keyboard_driving(base_url: str) -> None:
+    """Confirmed live (2026-10-22): the Drive preset's motor card and
+    surroundings/sonar widget never updated -- MotorWidget/AttitudeWidget
+    built their markup with the same internal ids for every mounted
+    instance (Systems vs Drive), so document.getElementById always
+    resolved to whichever instance's markup came first in index.html
+    (Systems). Fixed by scoping those lookups to each instance's own
+    `this.root`. This test drives via keyboard (not the joystick) and
+    watches the DRIVE preset specifically, so a regression back to the
+    global-document lookup bug is caught here even if Systems still
+    happens to look fine."""
+    async with playwright_async.async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page(viewport=VIEWPORT)
+            await page.goto(base_url)
+            await page.wait_for_timeout(500)
+
+            # take control, switch to keyboard (default anyway), switch to
+            # the Drive preset.
+            if await page.locator("#take-control-btn").is_visible():
+                await page.click("#take-control-btn")
+                await page.wait_for_timeout(200)
+            await page.click('[data-preset="drive"]')
+            await page.wait_for_timeout(200)
+
+            motor_before = await page.locator("#motor-card-drive #motor-l-cmd-fill").get_attribute("style")
+            sonar_before = await page.locator("#surr-dist").inner_text()
+
+            # hold W (forward) and read the live values WHILE held -- a
+            # keyup releases drive back to 0, so comparing against a
+            # post-release snapshot would just compare two zeros.
+            await page.keyboard.down("w")
+            await page.wait_for_timeout(500)
+            motor_after = await page.locator("#motor-card-drive #motor-l-cmd-fill").get_attribute("style")
+            sonar_after = await page.locator("#surr-dist").inner_text()
+            await page.keyboard.up("w")
+            await page.wait_for_timeout(200)
+
+            assert motor_after != motor_before, (
+                f"Drive preset's motor value never changed while driving: "
+                f"before={motor_before!r} after={motor_after!r}"
+            )
+            # sonar changes on its own via the demo's sweep/drive pattern
+            # too, but assert it's at least alive (non-"NOT INSTALLED"/"--")
+            # and has moved from its initial snapshot, confirming the
+            # surroundings widget is actually being rendered for this
+            # preset, not frozen on first paint.
+            assert sonar_after != sonar_before, (
+                f"Drive preset's sonar distance never changed: "
+                f"before={sonar_before!r} after={sonar_after!r}"
+            )
+        finally:
+            await browser.close()
+
+
+async def test_drive_preset_motor_and_sonar_update_while_driving(joystick_demo_backend):
+    base_url = joystick_demo_backend
+    await asyncio.wait_for(_run_drive_preset_updates_while_keyboard_driving(base_url), timeout=30.0)
+
+
+async def _run_drive_preset_motor_and_attitude_update_with_plain_keyboard(base_url: str) -> None:
+    """Reported live (2026-10-23): with input=Keyboard and the SIMULATOR
+    RUNNING WITHOUT ANY JOYSTICK FLAGS (no --joystick-demo/-fault/-estop),
+    holding D showed empty motor bars with no values and "Roll/Pitch/Yaw"
+    with no numbers in the Drive preset, while Systems worked -- i.e. the
+    exact scenario the previous Drive-preset fix (scoping getElementById
+    to this.root) was meant to cover, re-tested with the plain simulator
+    instead of --joystick-demo, and reading attitude's text content (not
+    just the motor fill style) since that's what the report called out as
+    blank. Could not reproduce against the current code in several manual
+    Playwright runs; this test locks in the working behavior and will
+    catch a regression (e.g. a future widget reintroducing the same
+    duplicate-id bug, or /config's async MotorWidget construction race)."""
+    async with playwright_async.async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page(viewport=VIEWPORT)
+            await page.goto(base_url)
+            await page.wait_for_timeout(1000)
+
+            if await page.locator("#take-control-btn").is_visible():
+                await page.click("#take-control-btn")
+                await page.wait_for_timeout(200)
+            await page.click('[data-preset="drive"]')
+            await page.wait_for_timeout(200)
+
+            motor_before = await page.locator("#motor-card-drive #motor-l-cmd-fill").get_attribute("style")
+            motor_val_before = await page.locator("#motor-card-drive #motor-l-cmd-value").inner_text()
+            roll_before = await page.locator("#attitude-card-drive #attitude-roll").inner_text()
+
+            # roll/pitch/yaw must show an actual number, not blank, even
+            # before driving (the plain simulator's IMU drifts on its own).
+            assert roll_before.strip() != "", "Drive preset's Roll value is blank before driving"
+
+            # hold D (turn) and read the live values WHILE held.
+            await page.keyboard.down("d")
+            await page.wait_for_timeout(700)
+            motor_after = await page.locator("#motor-card-drive #motor-l-cmd-fill").get_attribute("style")
+            motor_val_after = await page.locator("#motor-card-drive #motor-l-cmd-value").inner_text()
+            roll_after = await page.locator("#attitude-card-drive #attitude-roll").inner_text()
+            pitch_after = await page.locator("#attitude-card-drive #attitude-pitch").inner_text()
+            yaw_after = await page.locator("#attitude-card-drive #attitude-yaw").inner_text()
+            await page.keyboard.up("d")
+            await page.wait_for_timeout(200)
+
+            for label, val in [("Roll", roll_after), ("Pitch", pitch_after), ("Yaw", yaw_after)]:
+                assert val.strip() != "", f"Drive preset's {label} value is blank while driving"
+
+            assert motor_val_after != motor_val_before, (
+                f"Drive preset's motor L value never changed while holding D: "
+                f"before={motor_val_before!r} after={motor_val_after!r}"
+            )
+            assert motor_after != motor_before, (
+                f"Drive preset's motor L bar fill never changed while holding D: "
+                f"before={motor_before!r} after={motor_after!r}"
+            )
+        finally:
+            await browser.close()
+
+
+async def test_drive_preset_motor_and_attitude_update_with_plain_keyboard(running_backend):
+    base_url, _ = running_backend
+    await asyncio.wait_for(
+        _run_drive_preset_motor_and_attitude_update_with_plain_keyboard(base_url), timeout=30.0,
+    )
+
+
 # ---------------------------------------------------------------- F22 ----
 
 HW_FLAG_SETS = {

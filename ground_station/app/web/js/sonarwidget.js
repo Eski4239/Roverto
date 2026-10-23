@@ -2,6 +2,7 @@
 // (docs/03b §4). docs/02: dist_cm null = "no echo" (nodata, not absent).
 import { renderField } from "./hwstate.js";
 import { thresholdClassFor } from "./thresholds.js";
+import { sonarAngleToXY } from "./sonargeometry.js";
 
 const MAX_RANGE_CM = 200;
 const REDRAW_PERIOD_MS = 500; // 2 Hz
@@ -38,7 +39,7 @@ export class SonarWidget {
       linkLost,
       format: (v) => `${v.toFixed(0)} cm`,
     });
-    const distEl = document.getElementById("sonar-dist");
+    const distEl = this.root.querySelector("#sonar-dist");
     if (distEl) {
       distEl.textContent = field.text;
       distEl.className = `tile-value ${field.cls || thresholdClassFor("sonar_dist_cm", sonar.dist_cm)}`;
@@ -47,7 +48,7 @@ export class SonarWidget {
     if (nowWallMs - this._lastDrawWallMs < REDRAW_PERIOD_MS) return;
     this._lastDrawWallMs = nowWallMs;
 
-    const line = document.getElementById("sonar-radar-line");
+    const line = this.root.querySelector("#sonar-radar-line");
     if (!line) return;
     if (!sonarPresent || sonar.dist_cm == null || sonar.angle_deg == null) {
       line.setAttribute("x2", "50");
@@ -55,9 +56,9 @@ export class SonarWidget {
       return;
     }
     const range = Math.min(sonar.dist_cm, MAX_RANGE_CM) / MAX_RANGE_CM;
-    const angleRad = ((sonar.angle_deg - 90) * Math.PI) / 180;
     const length = 48 * range;
-    line.setAttribute("x2", (50 + length * Math.cos(angleRad)).toFixed(1));
-    line.setAttribute("y2", (52 + length * Math.sin(angleRad)).toFixed(1));
+    const { x, y } = sonarAngleToXY(sonar.angle_deg, length, 50, 52);
+    line.setAttribute("x2", x.toFixed(1));
+    line.setAttribute("y2", y.toFixed(1));
   }
 }

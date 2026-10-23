@@ -42,7 +42,7 @@ export class MotorWidget {
           formatValue: (v) => v.toFixed(0),
           field: `mot.pwm_${m.key}`,
         });
-        tile.attach(document.getElementById(`motor-row-${m.key}`));
+        tile.attach(this.root.querySelector(`#motor-row-${m.key}`));
         this._expandables[m.key] = tile;
       }
     }
@@ -81,8 +81,16 @@ export class MotorWidget {
     }
   }
 
+  // Confirmed live (2026-10-22): Systems and Drive each mount their own
+  // MotorWidget instance, but both built their markup with the SAME
+  // internal ids (motor-l-cmd-fill, etc.) -- document.getElementById only
+  // ever finds the first one in the page (Systems, since it comes first in
+  // index.html), so the Drive instance's bars silently never got touched
+  // regardless of which preset was visible. Scoping these lookups to
+  // this.root (via querySelector, not the global document) makes each
+  // instance only ever touch its own markup.
   _setFill(id, value, scale) {
-    const el = document.getElementById(id);
+    const el = this.root.querySelector(`#${id}`);
     if (!el) return;
     if (value == null || scale == null) {
       el.style.width = "0%";
@@ -94,7 +102,7 @@ export class MotorWidget {
   }
 
   _setText(id, text, cls) {
-    const el = document.getElementById(id);
+    const el = this.root.querySelector(`#${id}`);
     if (!el) return;
     el.textContent = text;
     el.className = `v ${cls || ""}`;

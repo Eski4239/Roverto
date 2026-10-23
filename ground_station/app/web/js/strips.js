@@ -22,7 +22,11 @@ export class StripsWidget {
   render(snapshot) {
     const camera = snapshot.hello ? snapshot.hello.hw.camera : null;
     const present = !!(camera && camera.present);
-    const stripEl = document.getElementById("strip-camera");
+    // Scoped to this.root -- Systems and Science each mount their own
+    // StripsWidget with the same internal id (strip-camera); the global
+    // document.getElementById would only ever reach whichever instance's
+    // markup is first in index.html, same bug class as motorwidget.js.
+    const stripEl = this.root.querySelector("#strip-camera");
     if (!stripEl) return;
     stripEl.classList.toggle("grown", present);
     if (present && camera.url) {

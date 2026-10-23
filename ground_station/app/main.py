@@ -17,9 +17,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ground_station.app import wire
+from ground_station.app.joystick import JoystickController
 from ground_station.app.link import Link
 from ground_station.app.logger import SessionLogger
-from ground_station.app.protocol import CmdDrive, CmdMsg, CmdServo
+from ground_station.app.protocol import CmdDrive, CmdMsg, CmdServo, EventMsg
 from ground_station.app.state import GroundState, load_config
 
 log = logging.getLogger("main")
@@ -81,6 +82,13 @@ def create_app(args: argparse.Namespace) -> FastAPI:
     last_ui_cmd: dict = {"drive": {}, "mode": "idle", "servo": {}, "buzzer": False}
     ui_sockets: set[WebSocket] = set()
     controlling_ws: Optional[WebSocket] = None
+    # Phase 6: which input source may drive while a tab is in control.
+    # Backend-authoritative (not just a UI convention) so "joystick drives
+    # only if input=Joystick is selected" is an actual safety guarantee --
+    # joystick.py always decodes frames for status/UI, but its drive output
+    # only reaches last_ui_cmd when input_mode == "joystick" below.
+    input_mode = "keyboard"
+    joystick = JoystickController(config.get("control", {}))
     # docs/02 §6.9: the GS sets CMD_ESTOP on the *next 3* CmdMsgs then
     # clears it (latch lives on the rover) -- a UI estop:true request bumps
     # this counter rather than staying latched forever.
@@ -114,6 +122,10 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                 elif frame.kind == wire.SK_BRIDGE_STATUS:
                     status = wire.decode_bridge_status(frame.payload)
                     state.ingest(status, rssi=frame.rssi, recv_wall_ms=recv_wall_ms)
+                elif frame.kind == wire.SK_JOYSTICK:
+                    joy_frame = wire.decode_joystick(frame.payload)
+                    joystick.on_frame(joy_frame, recv_wall_ms)
+                    await _drain_joystick_events_and_estop()
             except Exception:  # noqa: BLE001 -- F3: never let one bad frame
                 # kill telemetry ingestion for the rest of the session. An
                 # exception here previously propagated out of this task,
@@ -126,6 +138,29 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         while True:
             await asyncio.sleep(SCAN_TIMEOUT_POLL_S)
             state.poll_scan_timeouts(int(time.time() * 1000))
+
+    async def _joystick_timeout_loop() -> None:
+        while True:
+            await asyncio.sleep(SCAN_TIMEOUT_POLL_S)
+            joystick.poll_timeout(time.time() * 1000.0)
+            await _drain_joystick_events_and_estop()
+
+    async def _drain_joystick_events_and_estop() -> None:
+        """Either stick's button -> immediate E-STOP (safety exception, same
+        path as the UI E-STOP button, works with no tab in control); any
+        calibration/lost/fault state change -> one GS-synthesized event
+        (never spammed every tick -- joystick.py only arms these one-shot)."""
+        nonlocal estop_remaining
+        code = joystick.take_pending_event()
+        if code is not None:
+            state.events.append(EventMsg(
+                t=now_ms(), seq=0, level="warn", code=code,
+                msg=f"joystick: {code.lower()}",
+            ))
+        if joystick.take_pending_estop():
+            estop_remaining = 3
+            await _build_and_send_cmd(source="immediate")
+            heartbeat_wake.set()
 
     async def _build_and_send_cmd(*, source: str = "heartbeat") -> None:
         """Build one fresh CmdMsg from current intent and write it to the
@@ -142,10 +177,22 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                 estop_remaining -= 1
             send_estop_reset = estop_reset_pending
             estop_reset_pending = False  # one-shot, like estop_remaining
+            # Phase 6: joystick drive only reaches the rover while a tab is
+            # in control, that tab picked Joystick, and calibration/fault
+            # checks say it's safe -- otherwise fall back to whatever the UI
+            # (keyboard, or neutral) last asked for. Never mixed per-axis.
+            if (
+                controlling_ws is not None
+                and input_mode == "joystick"
+                and joystick.status == "ok"
+            ):
+                drive = CmdDrive(l=joystick.drive_l, r=joystick.drive_r)
+            else:
+                drive = CmdDrive(**last_ui_cmd["drive"])
             cmd = CmdMsg(
                 t=now_ms(),
                 seq=next_cmd_seq(),
-                drive=CmdDrive(**last_ui_cmd["drive"]),
+                drive=drive,
                 mode=last_ui_cmd["mode"],
                 servo=CmdServo(**last_ui_cmd["servo"]),
                 estop=send_estop,
@@ -187,6 +234,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         tasks = [
             asyncio.create_task(_ingest_loop()),
             asyncio.create_task(_scan_timeout_loop()),
+            asyncio.create_task(_joystick_timeout_loop()),
             asyncio.create_task(_camera_probe_loop()),
             asyncio.create_task(_cmd_heartbeat_loop()),
         ]
@@ -228,6 +276,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         return {
             "pwm_max": config["motors"]["pwm_max"],
             "thresholds": config.get("thresholds", {}),
+            "control": config.get("control", {}),
         }
 
     @app.get("/api/history")
@@ -248,7 +297,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
 
     @app.websocket("/ws/ui")
     async def ws_ui(ws: WebSocket) -> None:
-        nonlocal controlling_ws, estop_remaining, estop_reset_pending
+        nonlocal controlling_ws, estop_remaining, estop_reset_pending, input_mode
         await ws.accept()
         ui_sockets.add(ws)
         # F21: control is NOT granted here just because nobody else has it
@@ -268,6 +317,13 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                 )
                 snapshot["in_control"] = ws is controlling_ws
                 snapshot["controller_present"] = controlling_ws is not None
+                snapshot["joystick"] = joystick.to_block()
+                snapshot["input_mode"] = input_mode if ws is controlling_ws else None
+                # P6: lets the controlling tab's buzzer button show whether
+                # a press is actually being sent, not just its own mousedown
+                # CSS state (which could desync from reality -- e.g. a
+                # dropped mouseup, or control changing hands mid-press).
+                snapshot["buzzer_sent"] = bool(last_ui_cmd["buzzer"])
                 await ws.send_json(snapshot)
                 await asyncio.sleep(SNAPSHOT_PERIOD_S)
 
@@ -295,6 +351,22 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                         # mode to reset to, and silently switching modes on
                         # handoff (e.g. out of `assisted`) would itself be a
                         # surprise to the operator (F1).
+                        # Phase 6: new controller always starts on Keyboard
+                        # and sticks are ignored until re-centred -- prevents
+                        # a stale/uncentred joystick from driving the instant
+                        # control changes hands.
+                        input_mode = "keyboard"
+                        joystick.reset_calibration()
+                    continue
+                if msg_type == "set_input_mode":
+                    # Phase 6: only the controlling tab may switch input --
+                    # this is the server-side half of "joystick drives only
+                    # if input=Joystick is selected" (the other half is the
+                    # input_mode check in _build_and_send_cmd).
+                    if ws is controlling_ws and data.get("mode") in ("joystick", "keyboard"):
+                        input_mode = data["mode"]
+                        if input_mode == "joystick":
+                            joystick.reset_calibration()
                     continue
                 if msg_type != "cmd":
                     continue
@@ -313,6 +385,19 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                     heartbeat_wake.set()
                 if data.get("estop_reset") and ws is controlling_ws:
                     estop_reset_pending = True
+                    # P1 fix: a reset must also cancel any still-counting-
+                    # down exemption window from an earlier estop:true (the
+                    # "next 3 CmdMsgs" from docs/02 §6.9) -- otherwise a
+                    # reset sent while estop_remaining > 0 clears the latch
+                    # for one tick, then the very next heartbeat tick still
+                    # sends estop=True (because estop_remaining hadn't been
+                    # zeroed), re-latching it a moment later. A joystick
+                    # button held through the reset reproduces this
+                    # reliably: the button's own estop:true sets
+                    # estop_remaining=3, and a reset sent within that
+                    # ~300ms window used to silently get overridden.
+                    estop_remaining = 0
+                    joystick.on_estop_reset()
                 if ws is not controlling_ws:
                     continue
                 if "drive" in data:
@@ -323,6 +408,11 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                     last_ui_cmd["servo"] = data["servo"]
                 if "buzzer" in data:
                     last_ui_cmd["buzzer"] = bool(data["buzzer"])
+                if "speed_limit" in data:
+                    # Shared by both input modes: keyboard applies it
+                    # client-side to the drive values it sends; joystick.py
+                    # applies it server-side to the raw stick readings.
+                    joystick.speed_limit = max(0.0, min(1.0, float(data["speed_limit"])))
         except WebSocketDisconnect:
             pass
         finally:

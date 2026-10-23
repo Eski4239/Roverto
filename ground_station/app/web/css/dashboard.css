@@ -475,7 +475,59 @@ html, body {
 .drive-pad { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .drive-pad-row { display: flex; gap: 4px; }
 .drive-key { width: 36px; height: 36px; }
-[title="Phase 6"] { opacity: 0.55; }
+.drive-key.held { background: var(--accent); color: #fff; border-color: var(--accent); }
+.buzzer-btn.pressed { background: var(--warn); color: #fff; border-color: var(--warn); }
+.btn-group button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-group button:disabled, .buzzer-btn:disabled, .drive-key:disabled { opacity: 0.4; cursor: default; }
+
+.joystick-widget { display: flex; gap: 10px; justify-content: center; }
+.joy-stick {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+}
+.joy-ring {
+  position: absolute;
+  inset: 20%;
+  border: 1px dashed var(--border-strong);
+  border-radius: 50%;
+}
+.joy-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  left: 50%;
+  top: 50%;
+  transition: left 0.05s linear, top 0.05s linear;
+}
+.joy-btn {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.joy-btn.pressed { background: var(--bad); }
+.joy-status { font-size: 11px; font-weight: 700; text-align: center; letter-spacing: 0.06em; }
+.joy-status.ok { color: var(--ok); }
+.joy-status.warn { color: var(--warn); }
+.joy-status.bad { color: var(--bad); }
+.joy-status.stale { color: var(--stale); }
+.joy-drive {
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-2);
+  font-family: ui-monospace, Consolas, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---------------------------------------------------------------- eventlog */
 
