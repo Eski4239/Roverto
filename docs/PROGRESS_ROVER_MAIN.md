@@ -16,7 +16,8 @@ How to use this file
 
 ## 0. Current focus (update at the end of every session)
 
-**Now:** R0 — Victor installing PlatformIO in VS Code. USB driver done.
+**Now:** GS Phase 6 (joystick/keyboard controls) done. R0 — Victor installing PlatformIO in VS Code.
+USB driver done.
 **R0 test project** (outside the repo, e.g. `C:\dev\mac_test`) to validate the pioarduino toolchain
 and read each board's MAC:
 ```ini
@@ -139,11 +140,107 @@ rover_main plan (each step is flashed and tested on its own before the next):
   fragments, emit GS event `ROVER_RESTART` with the `reset_reason` from the next HELLO
   (BROWNOUT / PANIC / *WDT → warn). Mission clock keeps running. A link reconnect (bridge/USB)
   is *not* a rover restart.
+- **GS-3 Drive preset radar shows only the current beam, not the sweep outline** (known issue, not
+  fixed yet — flagged during Phase 6 live testing, 2026-10-23). `surroundingswidget.js`'s large
+  sonar panel draws a single `<polyline>` from the centre to the latest `telem.sonar` reading each
+  tick, same as `sonarwidget.js`'s small radar line — neither widget accumulates the points from a
+  full sweep (the periodic `scan` message, docs/02 §2.3) into a drawn outline/trail. The Science
+  preset's `SonarWidget` has the same limitation. Low priority: cosmetic, doesn't affect any safety
+  behaviour; would need its own small change (consume `snapshot.scan.pts` and draw all of them,
+  fading older sweeps) rather than a quick fix bundled into something else.
   **GS also:** if TELEM arrives but no HELLO has been seen since the restart, set
   `CMD_REQUEST_HELLO` on the next CmdMsgs until a HELLO arrives (D-015's "HELLO first" can be lost
   on the radio). Simulator gets a `--reboot-after N` flag to test this without killing the process.
 
 ## 5. Session log (newest first)
+
+### 2026-10-23 — GS side: Phase 6 second live-test follow-up (Pablo + Claude)
+Re-tested the two items reported from a live screenshot (input=Keyboard, simulator
+without any joystick flags, holding D):
+1. **Drive preset motor/attitude still blank**: could not reproduce against the current
+   code in several manual Playwright runs (motor bars and roll/pitch/yaw all updated
+   correctly while driving). Most likely the live session was against a stale browser
+   cache or a backend process predating the 2026-10-22 `this.root.querySelector` fix —
+   no further code change made. Added
+   `test_drive_preset_motor_and_attitude_update_with_plain_keyboard` (Playwright,
+   `tests/test_layout_playwright.py`) matching the exact reported scenario (plain
+   simulator, no joystick flags, hold D, read Drive's motor value AND roll/pitch/yaw
+   text) to lock in the working behaviour and catch any future regression.
+2. **SAFETY: joystick widget showing OK/-1.00/-1.00 with no frames or after loss**: also
+   could not reproduce at the backend (WS protocol) level or in a real browser session —
+   both the never-received and frames-stop-mid-drive scenarios correctly showed
+   NO JOYSTICK/LOST with drive 0 throughout testing. Added the three requested
+   regression tests to `tests/test_joystick.py` regardless, since this is a safety
+   property worth locking in permanently even though it couldn't be reproduced this
+   session: `test_never_received_joystick_frame_drives_zero_for_2s`,
+   `test_frames_stop_mid_drive_zeroes_within_200ms_and_shows_lost`,
+   `test_joystick_status_text_matches_backend_state_in_every_case`. All three pass
+   against current code.
+3. **GS-3** (radar beam vs sweep outline) logged above as a known, not-yet-fixed issue —
+   no code change.
+`pytest -q` and `pytest -m layout` both green after this round; see below for counts.
+
+### 2026-10-22 (3) — GS side: Phase 6 live-test follow-up (Pablo + Claude)
+Live testing of the Phase 6 build surfaced two real issues (not an E-STOP
+defect, as first suspected):
+- **Demo pattern confusion**: `--joystick-demo` pressed the stick button
+  once per 6-7s loop as part of a combined drive+button script. That made
+  a correctly-working E-STOP look broken (it kept re-latching every loop).
+  Split into two flags: `--joystick-demo` is now pure driving (centre →
+  forward → turn → reverse → centre, loops forever, never touches the
+  button); new `--joystick-demo-estop` presses the button exactly once,
+  10s after start, never again — for testing E-STOP in isolation.
+- **Drive preset never updated**: `MotorWidget`, `AttitudeWidget`, and
+  `StripsWidget` are each mounted twice (once per preset that shows them),
+  but all three built their markup with the *same* internal element ids
+  every time. `document.getElementById` only ever finds the first match in
+  the whole page (Systems, since it's first in index.html) — the Drive
+  instance's identically-id'd elements were "ghost" nodes nothing ever
+  wrote to, regardless of which preset was visible. Fixed by scoping every
+  internal lookup to `this.root.querySelector(...)` instead of the global
+  `document`. Confirmed live with a real browser (Playwright): the Drive
+  preset's motor bars and sonar distance now track the demo pattern
+  independently of Systems/Science. Also scoped `SonarWidget` similarly
+  for consistency, even though it's currently single-instance.
+New tests: `tests/test_layout_playwright.py::test_drive_preset_motor_and_sonar_update_while_driving`
+(drives via keyboard, watches the Drive preset specifically — catches a
+regression back to the global-document bug even if Systems still looks
+fine), plus `test_joystick.py` updates for the split demo flags
+(`test_demo_estop_fires_exactly_once_never_again`, renamed
+`test_demo_estop_pattern_includes_release_after_button_press`).
+`pytest -q`: 97 passed. `pytest -m layout`: 9 passed.
+
+### 2026-10-22 (2) — GS side: Phase 6 controls with joysticks (Pablo + Claude)
+- Backend: new `ground_station/app/joystick.py` (`JoystickController`) decodes `SK_JOYSTICK`
+  frames (already wire-ready since the protocol/joystick-serial PR), does per-axis centre
+  calibration (0.5 s window after bridge connect/TAKE CONTROL/switch-to-Joystick), ±8% deadband,
+  per-axis invert, tank-drive mapping, and fault/lost detection. `main.py`'s `_ingest_loop` now has
+  the missing `SK_JOYSTICK` branch; a new `_joystick_timeout_loop` polls the 200 ms lost-frame rule.
+- Input selector (Joystick/Keyboard) is backend-authoritative: `main.py` tracks `input_mode` for the
+  controlling tab and only lets joystick-derived drive reach the outgoing `CmdMsg` when a tab
+  controls, has Joystick selected, and calibration/fault checks say OK — the actual safety
+  enforcement, not just a UI convention. New WS message `set_input_mode`; TAKE CONTROL always
+  resets to Keyboard and re-arms calibration.
+- Either stick button E-STOPs immediately via the same immediate-send path as the UI E-STOP
+  button, even with nobody in control; `estop_reset` stays controller-tab-only as before.
+- Three new GS-synthesized `EventCode`s (`JOYSTICK_NOT_CENTRED`, `JOYSTICK_LOST`,
+  `JOYSTICK_FAULT`), same precedent as `ROVER_RESTART` — documented in docs/02 §6.13.
+- Keyboard input (W/S/A/D + arrows, Shift boost) is computed entirely client-side
+  (`keyboard.js`, pure `driveFromKeys()` + a thin `KeyboardInput` class), sent through the existing
+  `socket.sendCmd({drive:...})` path at ≤20 Hz; blur/TAKE CONTROL/mode-switch all release held keys.
+- `controlpanel.js` rewritten: live input selector, joystick widget (two stick circles, deadband
+  ring, button dot, status text, resulting L/R), mode/servo/buzzer/speed-limit all wired to
+  `socket.sendCmd()`. New `config.toml [control]` table (deadband/centre-band/timeout/fault
+  thresholds/invert/speed-limit-default), exposed via `GET /config`.
+- Simulator: `--joystick-demo` (scripted centre→forward→turn→release→button-press pattern at
+  50 Hz) and `--joystick-fault` (wild per-frame jump) flags, plus `--joystick-silent-after/-for`
+  (mirrors `--rover-silent-after/-for`'s idiom) for testing the 200 ms timeout without touching
+  HELLO/TELEM/SCAN/EVENT/ACK.
+- New `tests/test_joystick.py` (7 end-to-end tests over a real simulator+app, same pattern as
+  `test_cmd_heartbeat.py`) and `tests_js/test_keyboard.mjs` (pure `driveFromKeys()` unit tests).
+  Full suite: 87 passed (pytest), 16 passed (node --test).
+- Next GS: Phase 10 `ground_bridge` (needed for R3) once hardware/wiring for the physical
+  thumbsticks is ready; Phase 7 (event log UI, filtering) is also open.
 
 ### 2026-10-22 — GS side: Phase 5 + 5b merged
 - Command heartbeat is single-path (10 Hz, never resends stale commands).

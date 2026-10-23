@@ -74,6 +74,15 @@ TILT_RESUME_DEG = 30.0
 OBSTACLE_DIST_CM = 20.0
 RATE_LIMITED_EVENT_PERIOD_S = 1.0
 
+# P3: a simple 1D world so assisted mode (forward blocked < 20cm) is
+# actually testable -- the rover's position integrates applied PWM, and the
+# front sonar reports distance to a wall FRONT_WALL_START_CM ahead at boot.
+# Reversing (negative applied PWM) increases the distance again. Only the
+# front (angle=0) distance is dynamic; the other FAKE_ROOM_CM angles stay a
+# static room shape, since nothing asked for a full 2D map.
+FRONT_WALL_START_CM = 150.0
+ROVER_MAX_SPEED_CM_S = 40.0  # at full PWM (±pwm_max)
+
 
 def _default_pwm_max() -> int:
     try:
@@ -106,6 +115,9 @@ class RoverState:
     roll_deg: float = 0.0
     pitch_deg: float = 0.0
     yaw_deg: float = 0.0
+
+    # P3: front-wall distance, integrated from applied PWM each tick.
+    front_wall_cm: float = FRONT_WALL_START_CM
 
     mode: str = "idle"
     drive_l: float = 0.0
@@ -144,6 +156,27 @@ class RoverState:
     silent_for_s: Optional[float] = None
     silent_started_mono: Optional[float] = None
     silent_done: bool = False
+
+    # Phase 6: --joystick-demo scripts a pure driving pattern (centre ->
+    # forward -> turn -> reverse -> centre, looping, never touching the
+    # button) so the backend's calibration/deadband/fault logic is
+    # testable without real hardware. --joystick-demo-estop is a separate,
+    # deliberate one-shot button press (10s after start, never again) for
+    # testing E-STOP in isolation -- confirmed live that combining both in
+    # one looping pattern made a correctly-working E-STOP look broken,
+    # since the button fired every loop. --joystick-fault reuses the same
+    # clock but injects a jump every frame once armed, to exercise
+    # joystick.py's fault detection.
+    joystick_demo: bool = False
+    joystick_demo_estop: bool = False
+    joystick_demo_estop_fired: bool = False
+    joystick_fault: bool = False
+    joystick_start_mono: Optional[float] = None
+    joystick_seq: int = 0
+    joystick_silent_after_s: Optional[float] = None
+    joystick_silent_for_s: Optional[float] = None
+    joystick_silent_started_mono: Optional[float] = None
+    joystick_silent_done: bool = False
 
     # tests only: counts frames the serial parser had to drop (bad CRC,
     # truncated, or otherwise undecodable) vs. CmdMsgs actually applied --
@@ -248,6 +281,94 @@ class RoverState:
             return False
         return True
 
+    def _joystick_is_silent(self) -> bool:
+        """--joystick-silent-after N --joystick-silent-for M: SK_JOYSTICK
+        stops for M s starting at uptime N s (mirrors is_silent()'s idiom),
+        for testing the GS's 200 ms joystick-lost timeout without affecting
+        HELLO/TELEM/SCAN/EVENT/ACK."""
+        if (
+            self.joystick_silent_after_s is None
+            or self.joystick_silent_for_s is None
+            or self.joystick_silent_done
+        ):
+            return False
+        elapsed = time.monotonic() - self.start_mono
+        if self.joystick_silent_started_mono is None:
+            if elapsed < self.joystick_silent_after_s:
+                return False
+            self.joystick_silent_started_mono = time.monotonic()
+        if time.monotonic() - self.joystick_silent_started_mono >= self.joystick_silent_for_s:
+            self.joystick_silent_done = True
+            return False
+        return True
+
+    def build_joystick_frame(self) -> Optional[bytes]:
+        """--joystick-demo: centre -> forward -> turn -> reverse -> centre,
+        looping forever, NEVER touching the button. Confirmed live
+        (2026-10-22): the previous combined pattern pressed the stick
+        button every loop, which E-STOPs the rover on a timer that looks
+        like a bug but is actually the (correct) button logic reacting to
+        a demo script that presses it repeatedly -- not an E-STOP defect.
+        Splitting the button out of the driving demo removes that
+        confusion; --joystick-demo-estop (self.joystick_demo_estop) is the
+        separate, deliberate "press the button exactly once" scenario for
+        testing E-STOP itself. Raw ADC values around 2048 (docs/02 §4
+        JoystickState). --joystick-fault adds a wild jump on top, on every
+        frame, independent of either demo pattern being enabled.
+
+        The centred window (cycle < 1.0) recurs every loop so the
+        backend's 0.5s centre-calibration gate always has a fresh
+        opportunity to open, however far into a cycle the backend happened
+        to connect/switch-to-Joystick."""
+        if not self.joystick_demo and not self.joystick_demo_estop and not self.joystick_fault:
+            return None
+        if self._joystick_is_silent():
+            return None
+        if self.joystick_start_mono is None:
+            self.joystick_start_mono = time.monotonic()
+        elapsed = time.monotonic() - self.joystick_start_mono
+
+        CENTRE = 2048
+        FULL = 2048  # deflection to reach the raw extremes (0 / 4095)
+        lx = ly = rx = ry = CENTRE
+        buttons = 0
+
+        if self.joystick_demo:
+            cycle = elapsed % 6.0  # loops forever: centre/fwd/turn/reverse/centre
+            if cycle < 1.0:
+                pass  # centre 1s
+            elif cycle < 2.5:
+                ly = ry = CENTRE - FULL  # both sticks forward (y: push = decrease)
+            elif cycle < 4.0:
+                ly = CENTRE - FULL
+                ry = CENTRE + FULL  # turn: left forward, right back
+            elif cycle < 5.0:
+                ly = ry = CENTRE + FULL  # reverse: both sticks back
+            else:
+                pass  # centre 1s before looping
+
+        if self.joystick_demo_estop and not self.joystick_demo_estop_fired:
+            # Held for a short window (not a single-frame pulse) so a
+            # dropped frame can't make the press invisible to the backend's
+            # edge detector; fired=True latches it off for good afterwards
+            # -- "once, 10s after start, never again," confirmed live.
+            if 10.0 <= elapsed < 10.3:
+                buttons = 0b01
+            elif elapsed >= 10.3:
+                self.joystick_demo_estop_fired = True
+
+        if self.joystick_fault:
+            jump = FULL if self.joystick_seq % 2 == 0 else -FULL
+            lx = max(0, min(4095, lx + jump))
+            ry = max(0, min(4095, ry - jump))
+
+        self.joystick_seq = (self.joystick_seq + 1) % 256
+        return wire.encode_joystick(wire.JoystickState(
+            lx=max(0, min(4095, lx)), ly=max(0, min(4095, ly)),
+            rx=max(0, min(4095, rx)), ry=max(0, min(4095, ry)),
+            buttons=buttons, seq=self.joystick_seq,
+        ))
+
     def tick(self) -> None:
         """Advance drift/decay and enforce safety rules. Call at ~10 Hz."""
         if self._watchdog_handle is None:
@@ -270,6 +391,17 @@ class RoverState:
         self.roll_deg = max(-45.0, min(45.0, self.roll_deg * 0.98))
         self.pitch_deg = max(-45.0, min(45.0, self.pitch_deg * 0.98))
         self.yaw_deg = (self.yaw_deg + random.uniform(-0.5, 0.5)) % 360.0
+
+        # P3: integrate the rover's forward position from applied drive --
+        # tank-drive average of both wheels, scaled to ROVER_MAX_SPEED_CM_S
+        # at full deflection. Driving forward shrinks the front wall
+        # distance; reversing (negative average) grows it back. Clamped at
+        # 0 (can't drive through the wall) with no upper bound (there's
+        # nothing behind the rover in this simple 1D model).
+        forward_frac = (self.drive_l + self.drive_r) / 2.0
+        self.front_wall_cm = max(
+            0.0, self.front_wall_cm - forward_frac * ROVER_MAX_SPEED_CM_S * TELEM_PERIOD_S,
+        )
 
         # watchdog is now an event-loop timer (_arm_watchdog/_trip_watchdog),
         # armed on every accepted CmdMsg -- see apply_cmd() -- not polled
@@ -353,6 +485,12 @@ class RoverState:
         """docs/02 §6.8 ack rules; §5.2 estop latch; §5 4b modes (Q-5)."""
         self.last_cmd_mono = time.monotonic()
         self.accepted_cmd_count += 1
+        # P6: print on change (not every accepted CmdMsg, which would spam
+        # the console at 10Hz) so the operator gets visible feedback that
+        # the buzzer flag actually reached the simulator -- there was
+        # previously no sign at all that a BUZZER press had any effect.
+        if cmd.buzzer != self.last_cmd_buzzer:
+            log.info("BUZZER %s", "ON" if cmd.buzzer else "OFF")
         self.last_cmd_buzzer = cmd.buzzer  # tests only (F1)
         self._arm_watchdog(asyncio.get_running_loop(), cmd_received=True)
 
@@ -448,6 +586,12 @@ class RoverState:
         )
 
     def _sonar_dist_cm(self, angle_deg: float) -> float:
+        # P3: only the front reading tracks the rover's integrated position
+        # (self.front_wall_cm, updated in tick()) -- the rest of the sweep
+        # still comes from the static FAKE_ROOM_CM shape, since nothing
+        # asked for a full 2D map, just a testable front obstacle.
+        if angle_deg == 0.0:
+            return max(2.0, self.front_wall_cm + random.uniform(-3.0, 3.0))
         angles = sorted(FAKE_ROOM_CM)
         lo = max(a for a in angles if a <= angle_deg)
         hi = min((a for a in angles if a >= angle_deg), default=lo)
@@ -462,7 +606,17 @@ class RoverState:
         env_model = self._env_model()
         has_hum = env_model == "bme280"
         has_press = env_model in ("bme280", "bmp280")
-        sonar_dist = self._sonar_dist_cm(self.sweep_angle_deg)
+        # P4 fix: while in fixed mode the servo isn't sweeping (tick()
+        # already stops advancing sweep_angle_deg -- see the comment there),
+        # but TELEM must report the commanded servo_angle_deg, not whatever
+        # arbitrary angle the sweep happened to freeze at when the mode
+        # switched. Reporting the frozen sweep angle (e.g. 78 deg instead of
+        # the requested 90) is what pushed the radar widget's drawn beam
+        # outside its panel -- see sonarwidget.js's angle-to-xy fix too.
+        reported_angle_deg = (
+            float(self.servo_angle_deg) if self.servo_mode == "fixed" else self.sweep_angle_deg
+        )
+        sonar_dist = self._sonar_dist_cm(reported_angle_deg)
         pwm_l = int(self.drive_l * self.pwm_max)
         pwm_r = int(self.drive_r * self.pwm_max)
         return TelemMsg(
@@ -495,7 +649,7 @@ class RoverState:
                 ax_g=random.uniform(-0.02, 0.02), ay_g=random.uniform(-0.02, 0.02), az_g=1.0,
                 gz_dps=random.uniform(-0.5, 0.5), temp_c=self.chip_temp_c - 3.0,
             ),
-            sonar=TelemSonar(angle_deg=self.sweep_angle_deg, dist_cm=sonar_dist),
+            sonar=TelemSonar(angle_deg=reported_angle_deg, dist_cm=sonar_dist),
             state=TelemState(
                 mode=self.mode, estop=self.estop_latched, wd_ok=self.wd_ok,
                 last_cmd_age_ms=(
@@ -639,6 +793,25 @@ def _advance_deadline(next_t: float, period: float, now: float) -> float:
     return next_t
 
 
+JOYSTICK_PERIOD_S = 1.0 / 50.0  # docs/02 §4: SK_JOYSTICK at 50 Hz
+
+
+async def _joystick_loop(state: RoverState, registry: _ClientRegistry, args: argparse.Namespace) -> None:
+    """Separate from _driver_loop's 10 Hz tick -- SK_JOYSTICK is reported at
+    50 Hz by a real bridge (docs/02 §4), independent of the rover's own
+    TELEM cadence."""
+    loop = asyncio.get_running_loop()
+    next_tick = loop.time()
+    while True:
+        now = loop.time()
+        if now >= next_tick:
+            next_tick = _advance_deadline(next_tick, JOYSTICK_PERIOD_S, now)
+            payload = state.build_joystick_frame()
+            if payload is not None:
+                _send_frame(registry, wire.SK_JOYSTICK, 0, payload, args.lossy)
+        await asyncio.sleep(max(0.0, next_tick - loop.time()))
+
+
 async def _driver_loop(state: RoverState, registry: _ClientRegistry, args: argparse.Namespace) -> None:
     loop = asyncio.get_running_loop()
     scan_period = LIDAR_SCAN_PERIOD_S if args.lidar else SONAR_SCAN_PERIOD_S
@@ -701,6 +874,11 @@ def build_state(args: argparse.Namespace) -> RoverState:
         reboot_after_s=args.reboot_after,
         silent_after_s=args.rover_silent_after,
         silent_for_s=args.rover_silent_for,
+        joystick_demo=args.joystick_demo,
+        joystick_demo_estop=args.joystick_demo_estop,
+        joystick_fault=args.joystick_fault,
+        joystick_silent_after_s=args.joystick_silent_after,
+        joystick_silent_for_s=args.joystick_silent_for,
     )
     return state
 
@@ -732,6 +910,26 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--rover-silent-for", type=float, default=None, dest="rover_silent_for",
         help="how long the rover stays silent, in seconds (requires --rover-silent-after)",
     )
+    parser.add_argument(
+        "--joystick-demo", action="store_true",
+        help="emit SK_JOYSTICK at 50 Hz: centre, forward, turn, reverse, centre (loops forever, never touches the button)",
+    )
+    parser.add_argument(
+        "--joystick-demo-estop", action="store_true",
+        help="press the left stick button once, 10s after start, then never again -- for testing E-STOP in isolation",
+    )
+    parser.add_argument(
+        "--joystick-fault", action="store_true",
+        help="inject wildly jumping SK_JOYSTICK values every frame, to test fault detection",
+    )
+    parser.add_argument(
+        "--joystick-silent-after", type=float, default=None, dest="joystick_silent_after",
+        help="stop SK_JOYSTICK at this uptime in seconds (requires --joystick-demo/-fault)",
+    )
+    parser.add_argument(
+        "--joystick-silent-for", type=float, default=None, dest="joystick_silent_for",
+        help="how long SK_JOYSTICK stays silent, in seconds",
+    )
     return parser.parse_args(argv)
 
 
@@ -744,6 +942,7 @@ async def run_server(args: argparse.Namespace) -> asyncio.base_events.Server:
 
     server = await asyncio.start_server(_handler, args.host, args.port)
     asyncio.create_task(_driver_loop(state, registry, args))
+    asyncio.create_task(_joystick_loop(state, registry, args))
     server._rover_state = state  # tests only: direct state access, bypassing the wire
     return server
 

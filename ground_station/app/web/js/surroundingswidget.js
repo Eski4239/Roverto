@@ -5,6 +5,7 @@
 // beside it -- not two permanent side-by-side panels.
 import { renderField } from "./hwstate.js";
 import { thresholdClassFor } from "./thresholds.js";
+import { sonarAngleToXY } from "./sonargeometry.js";
 
 const MAX_RANGE_CM = 200;
 const RANGE_RINGS_CM = [66, 133, 200]; // 0.66m / 1.33m / 2m, per spec
@@ -53,15 +54,15 @@ export class SurroundingsWidget {
       linkLost,
       format: (v) => `${v.toFixed(0)} cm ahead`,
     });
-    const distEl = document.getElementById("surr-dist");
+    const distEl = this.root.querySelector("#surr-dist");
     if (distEl) {
       distEl.textContent = field.text;
       distEl.className = `tile-value ${field.cls || thresholdClassFor("sonar_dist_cm", sonar.dist_cm)}`;
     }
 
-    const cameraEl = document.getElementById("surr-camera");
-    const radarEl = document.getElementById("surr-radar");
-    const noteEl = document.getElementById("surr-note");
+    const cameraEl = this.root.querySelector("#surr-camera");
+    const radarEl = this.root.querySelector("#surr-radar");
+    const noteEl = this.root.querySelector("#surr-note");
     if (cameraEl && radarEl) {
       cameraEl.hidden = !cameraPresent;
       radarEl.classList.toggle("companion", cameraPresent);
@@ -74,17 +75,15 @@ export class SurroundingsWidget {
     if (nowWallMs - this._lastDrawWallMs < REDRAW_PERIOD_MS) return;
     this._lastDrawWallMs = nowWallMs;
 
-    const sweep = document.getElementById("surr-sweep");
+    const sweep = this.root.querySelector("#surr-sweep");
     if (!sweep) return;
     if (!sonarPresent || sonar.dist_cm == null || sonar.angle_deg == null) {
       sweep.setAttribute("points", "");
       return;
     }
     const range = Math.min(sonar.dist_cm, MAX_RANGE_CM) / MAX_RANGE_CM;
-    const angleRad = ((sonar.angle_deg - 90) * Math.PI) / 180;
     const length = 95 * range;
-    const px = 105 + length * Math.cos(angleRad);
-    const py = 105 + length * Math.sin(angleRad);
+    const { x: px, y: py } = sonarAngleToXY(sonar.angle_deg, length, 105, 105);
     sweep.setAttribute("points", `105,105 ${px.toFixed(1)},${py.toFixed(1)}`);
   }
 }

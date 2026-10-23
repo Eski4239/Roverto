@@ -15,6 +15,17 @@ camera_url = "http://192.168.4.1"
 [motors]
 pwm_max = 120
 
+# Phase 6 — joystick/keyboard drive input (docs/02 §6.12, docs/04 §1b).
+[control]
+deadband_pct = 8
+centre_band = 300          # raw ADC units either side of 2048 counted as "centred"
+joystick_timeout_ms = 200
+fault_jump_pct = 50
+fault_repeat_count = 3
+invert_l = false
+invert_r = false
+speed_limit_default = 1.0
+
 [thresholds.vbat_v]
 green_above = 11.1
 red_below = 10.5

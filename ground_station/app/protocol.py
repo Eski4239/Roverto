@@ -17,6 +17,10 @@ EventCode = Literal[
     "BOOT", "BATT_LOW", "BATT_CRIT", "TILT", "WD_STOP",
     "ESTOP", "SENSOR_LOST", "OBSTACLE", "CMD_REJECTED",
     "ROVER_RESTART",  # GS-synthesized only (state.py) — never on the wire
+    # Phase 6 — GS-synthesized only (joystick.py), never on the wire. The
+    # bridge only reports raw SK_JOYSTICK frames (docs/04 §1b); all
+    # calibration/fault detection happens here, so these codes do too.
+    "JOYSTICK_NOT_CENTRED", "JOYSTICK_LOST", "JOYSTICK_FAULT",
 ]
 ScanSrc = Literal["sonar", "lidar"]
 ServoMode = Literal["sweep", "fixed"]

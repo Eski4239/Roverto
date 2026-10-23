@@ -41,12 +41,12 @@ export class AttitudeWidget {
         slotEl: expandSlotEl, tileKey: "roll_deg", label: "Roll", unit: "°",
         formatValue: (v) => v.toFixed(1), field: "imu.roll_deg",
       });
-      this._expandables.roll.attach(document.getElementById("attitude-roll-row"));
+      this._expandables.roll.attach(this.root.querySelector("#attitude-roll-row"));
       this._expandables.pitch = new ExpandableTile({
         slotEl: expandSlotEl, tileKey: "pitch_deg", label: "Pitch", unit: "°",
         formatValue: (v) => v.toFixed(1), field: "imu.pitch_deg",
       });
-      this._expandables.pitch.attach(document.getElementById("attitude-pitch-row"));
+      this._expandables.pitch.attach(this.root.querySelector("#attitude-pitch-row"));
     }
   }
 
@@ -68,7 +68,14 @@ export class AttitudeWidget {
     if (nowWallMs - this._lastDrawWallMs < REDRAW_PERIOD_MS) return;
     this._lastDrawWallMs = nowWallMs;
 
-    const horizonG = document.getElementById("attitude-horizon-g");
+    // Confirmed live (2026-10-22): same duplicate-id bug as motorwidget.js
+    // -- Systems and Drive each mount their own AttitudeWidget, but
+    // document.getElementById("attitude-horizon-g") etc. always resolved
+    // to whichever instance's markup came first in index.html (Systems),
+    // so the Drive instance's horizon/compass/readout never moved no
+    // matter which preset was visible. this.root scopes each instance to
+    // its own markup.
+    const horizonG = this.root.querySelector("#attitude-horizon-g");
     if (horizonG) {
       if (imu.roll_deg == null || imu.pitch_deg == null || !imuPresent) {
         horizonG.setAttribute("transform", "");
@@ -77,7 +84,7 @@ export class AttitudeWidget {
         horizonG.setAttribute("transform", `translate(0, ${pitchOffsetPx}) rotate(${-imu.roll_deg}, 30, 30)`);
       }
     }
-    const compassG = document.getElementById("attitude-compass-g");
+    const compassG = this.root.querySelector("#attitude-compass-g");
     if (compassG) {
       compassG.setAttribute(
         "transform",
@@ -93,7 +100,7 @@ export class AttitudeWidget {
       linkLost,
       format: (v) => `${v.toFixed(1)}°`,
     });
-    const el = document.getElementById(id);
+    const el = this.root.querySelector(`#${id}`);
     if (el) {
       el.textContent = field.text;
       el.className = `v ${field.cls || (thresholdKey ? thresholdClassFor(thresholdKey, value) : "")}`;
