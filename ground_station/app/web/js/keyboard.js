@@ -1,8 +1,11 @@
-// Phase 6 keyboard drive input (docs/03 §3, prompt item 3): W/S/A/D + arrows,
+// Phase 6 keyboard drive input (docs/03 §3, prompt item 3): W/S/A/D,
 // Shift boost, focus/blur/release -> 0. Computed entirely client-side; sent
 // through the same socket.sendCmd({drive:...}) path the joystick-derived
 // backend output uses on the wire. The drive math is a pure function so it's
 // unit-testable the same way sparkline.js's downsample/yRange are (tests_js/).
+// Phase 10: arrow keys pan the servo (CmdServo, fixed mode) instead of
+// driving -- freed up for a future camera tilt/pan mount -- and "B" sounds
+// the buzzer, momentary like the on-screen BUZZER button.
 
 /**
  * Tank-drive from a set of currently-held key names.
@@ -11,8 +14,8 @@
  * @returns {{l: number, r: number}}
  */
 export function driveFromKeys(keys, speedLimit) {
-  const fwd = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
-  const turn = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
+  const fwd = (keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0);
+  const turn = (keys.has("d") ? 1 : 0) - (keys.has("a") ? 1 : 0);
   const boost = keys.has("shift") ? 1 : 0.5;
   const scale = speedLimit * boost;
   const l = clamp(fwd + turn, -1, 1) * scale;
@@ -24,11 +27,13 @@ function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-const DRIVE_KEYS = new Set([
-  "w", "s", "a", "d",
-  "arrowup", "arrowdown", "arrowleft", "arrowright",
-  "shift",
-]);
+const DRIVE_KEYS = new Set(["w", "s", "a", "d", "shift"]);
+const SERVO_KEYS = new Set(["arrowleft", "arrowright"]);
+const BUZZER_KEY = "b";
+const SERVO_STEP_DEG = 5;
+const SERVO_ANGLE_MIN = 0;
+const SERVO_ANGLE_MAX = 180;
+const SERVO_ANGLE_DEFAULT = 90; // matches controlpanel.js's FIXED 90° button
 
 const SEND_PERIOD_MS = 1000 / 20; // <= 20 Hz (prompt item 4)
 
@@ -43,6 +48,8 @@ export class KeyboardInput {
     // synthetic nowMs=0 at construction time).
     this._lastSentAt = -Infinity;
     this._lastSent = null;
+    this._servoAngle = SERVO_ANGLE_DEFAULT;
+    this._buzzerHeld = false;
 
     this._onKeyDown = (e) => this._handleKey(e, true);
     this._onKeyUp = (e) => this._handleKey(e, false);
@@ -73,11 +80,18 @@ export class KeyboardInput {
   _release() {
     this._held.clear();
     this._maybeSend(true);
+    if (this._buzzerHeld) {
+      this._buzzerHeld = false;
+      this.socket.sendCmd({ buzzer: false });
+    }
   }
 
   _handleKey(e, down) {
     const key = e.key.toLowerCase();
-    if (!DRIVE_KEYS.has(key)) return;
+    const isDriveKey = DRIVE_KEYS.has(key);
+    const isServoKey = SERVO_KEYS.has(key);
+    const isBuzzerKey = key === BUZZER_KEY;
+    if (!isDriveKey && !isServoKey && !isBuzzerKey) return;
     if (!this._isActive()) {
       this._held.clear();
       return;
@@ -86,12 +100,34 @@ export class KeyboardInput {
     const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
     if (typing) return;
     e.preventDefault();
-    if (down) {
-      this._held.add(key);
-    } else {
-      this._held.delete(key);
+
+    if (isDriveKey) {
+      if (down) {
+        this._held.add(key);
+      } else {
+        this._held.delete(key);
+      }
+      this._maybeSend(false);
+      return;
     }
-    this._maybeSend(false);
+
+    if (isServoKey) {
+      if (!down) return; // step on press only, not on release/repeat-up
+      const step = key === "arrowleft" ? -SERVO_STEP_DEG : SERVO_STEP_DEG;
+      this._servoAngle = clamp(this._servoAngle + step, SERVO_ANGLE_MIN, SERVO_ANGLE_MAX);
+      this.socket.sendCmd({ servo: { mode: "fixed", angle_deg: this._servoAngle } });
+      return;
+    }
+
+    // isBuzzerKey
+    if (down) {
+      if (this._buzzerHeld) return; // ignore key-repeat
+      this._buzzerHeld = true;
+      this.socket.sendCmd({ buzzer: true });
+    } else {
+      this._buzzerHeld = false;
+      this.socket.sendCmd({ buzzer: false });
+    }
   }
 
   _maybeSend(force) {

@@ -169,6 +169,13 @@ rover_main plan (each step is flashed and tested on its own before the next):
   **GS also:** if TELEM arrives but no HELLO has been seen since the restart, set
   `CMD_REQUEST_HELLO` on the next CmdMsgs until a HELLO arrives (D-015's "HELLO first" can be lost
   on the radio). Simulator gets a `--reboot-after N` flag to test this without killing the process.
+- **GS-4 BME280 confirmed fitted (2026-10-24, for Victor):** docs/04 §0/§A now say **FITTED**, not
+  "buy now" — the module is on the board. At R6, verify chip ID at 0x76/0x77 reads **0x60**
+  (BME280, has humidity) and not **0x58** (BMP280 — no humidity; `hw.env.model` must still report
+  `"bmp280"` and `hum_pct` stays `NaN`/`null`, per D-009, if that's what you actually get). Take the
+  `alt_m` pressure reference at boot, before the first TELEM. GS side is already fully wired for
+  this (env fields, `hw.env.model`, simulator `--bme280` default, dashboard Environment tiles with
+  per-model gating) — no GS changes needed once R6 lands.
 
 ## 5. Session log (newest first)
 

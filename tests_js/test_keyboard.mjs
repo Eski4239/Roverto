@@ -12,10 +12,8 @@ test("W alone drives both wheels forward at half (no Shift boost)", () => {
   assert.equal(r, 0.5);
 });
 
-test("arrow up behaves like W", () => {
-  const { l, r } = driveFromKeys(new Set(["arrowup"]), 1.0);
-  assert.equal(l, 0.5);
-  assert.equal(r, 0.5);
+test("arrow keys no longer drive (Phase 10: freed up for servo pan)", () => {
+  assert.deepEqual(driveFromKeys(new Set(["arrowup", "arrowdown", "arrowleft", "arrowright"]), 1.0), { l: 0, r: 0 });
 });
 
 test("Shift boosts W to full speed", () => {

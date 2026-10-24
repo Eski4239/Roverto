@@ -110,7 +110,7 @@ config.toml via the backend. Redraw charts at most 2 Hz.
 
 ## Phase 6 — Control + safety
 ```
-Implement CONTROL from docs/03 §3: WASD/arrows, speed limit, Shift boost, mode, servo sweep/fixed,
+Implement CONTROL from docs/03 §3: WASD drive, speed limit, Shift boost, mode, servo sweep/fixed,
 buzzer. Keys act only while the page is focused; blur/close -> drive 0. E-STOP sets the estop flag
 on the next 3 CmdMsgs immediately (don't wait for the 10 Hz tick); reset needs a confirm.
 Show wd_ok and last_cmd_age_ms. Simulator tests: stop CmdMsg -> WD_STOP within 600 ms; estop
@@ -172,6 +172,11 @@ secrets.example.h committed, secrets.h gitignored. Explain flashing and how to f
 Also write tools/bridge_echo_test.py: opens the port, checks BRIDGE_STATUS arrives and CRCs are valid.
 ```
 ✔ Check: bridge plugged in → `python tools/bridge_echo_test.py COM5` passes; dashboard shows "LOST" (not NO_BRIDGE).
+
+Before rover_main (Phase 11) exists, `tools/espnow_beacon` is a temporary PlatformIO sketch for a
+second ESP32 that stands in for the rover: it sends golden HelloMsg/TelemMsg to the bridge's MAC,
+prints any CmdMsg it receives, and replies with AckMsg. Flash it, test the bridge end-to-end, then
+reflash rover_main once it's ready — see `tools/espnow_beacon/README.md`.
 
 ---
 

@@ -8,7 +8,7 @@ Prices are rough estimates (Oct 2026), check before buying.
 
 | # | Item                         | Status        | Protocol fields ready     | Est. cost |
 |---|------------------------------|---------------|---------------------------|-----------|
-| A | BME280 temp/hum/pressure     | **NOW**       | `env.*`                   | €5–10     |
+| A | BME280 temp/hum/pressure     | **FITTED**    | `env.*`                   | €5–10     |
 | B | Battery voltage divider      | **NOW** (resistors on hand) | `pwr.vbat_v`, `pwr.soc_pct` | €0 |
 | — | ESP32 #2 as ground_bridge (USB, ESP-NOW) | **NOW** (board on hand) | all | €0 |
 | C | ESP32-CAM + USB programmer (ESP32-CAM-MB) | FUTURE | `hw.camera`, `/video` | €10–15 |
@@ -53,12 +53,14 @@ broken signal wire reads centre (~2048) instead of floating to a rail.
 
 ## 2. Implementation steps
 
-### A. BME280 (now)
-1. Buy a module **explicitly marked BME280** (BMP280 has no humidity). Wire to I2C, 3.3 V.
-2. Firmware: driver reads chip ID → `hw.env.model` = `bme280` / `bmp280`. Read at 1 Hz.
-3. Set pressure reference at boot → `alt_m` relative altitude.
-4. Keep the DHT11 as a fallback driver (`hw.env.model:"dht11"`, `press_hpa:null`).
-5. ✔ Test: breathe on it → humidity rises; lift 1 m → `alt_m` changes ~ +1 m (noisy, ±0.5 m).
+### A. BME280 (fitted)
+**Confirmed fitted** on `rover_main`'s I2C bus (SDA 21 / SCL 22, 3.3 V, address 0x76 or 0x77).
+1. Firmware: driver reads chip ID → `hw.env.model` = `bme280` / `bmp280` (D-009: 0x60 = BME280,
+   0x58 = BMP280 → no humidity). Read at 1 Hz.
+2. Set pressure reference at boot → `alt_m` relative altitude.
+3. Keep the DHT11 as a fallback driver (`hw.env.model:"dht11"`, `press_hpa:null`) for when neither
+   chip ID matches.
+4. ✔ Test: breathe on it → humidity rises; lift 1 m → `alt_m` changes ~ +1 m (noisy, ±0.5 m).
 
 ### B. Battery voltage divider (now)
 1. 100 kΩ (top) / 22 kΩ (bottom) (D-002: keeps 12.6 V at 2.27 V, inside the accurate ADC range) from battery + to GND, mid-point → GPIO34. 100 nF cap mid-point → GND.
@@ -117,7 +119,6 @@ One MP1584EN for ESP32 + logic, a second one for camera + lidar + servo. Prevent
 servo noise resetting the ESP32. Add 470 µF on each 5 V rail.
 
 ## 3. Future shopping list (copy into LISTA)
-- [ ] BME280 module (verify it's BME, not BMP) — **buy now**
 - [ ] ESP32-CAM AI-Thinker + ESP32-CAM-MB programmer
 - [ ] 2× LM393 slotted speed sensor + 20-slot encoder discs (or encoder motors)
 - [ ] INA219 module
