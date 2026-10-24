@@ -84,6 +84,21 @@ you to run `pip install -r ground_station/requirements.txt`.
 5. `git commit` (or ask Claude to commit) → `git push`.
 6. If something breaks: Claude Code has checkpoints/rewind, and git is your real safety net.
 
+## Step 7 — Building/flashing firmware (ground_bridge, rover_main, etc.)
+- **Always use PowerShell**, not the VS Code integrated Git Bash terminal, for `pio` commands — the
+  Espressif toolchain installer rejects MSYS/MinGW paths and will fail partway through.
+- Find each board's COM port after plugging it in: Device Manager → **Ports (COM & LPT)**. Re-check
+  after unplugging/replugging, since Windows can reassign the number.
+- Typical flash/monitor cycle:
+  ```powershell
+  cd firmware\ground_bridge
+  pio run -t upload --upload-port COM3
+  pio device monitor -b 921600 -p COM3
+  ```
+- If `pio` isn't found, open it from the PlatformIO IDE's own terminal once (View → Command
+  Palette → "PlatformIO: New Terminal"), which sets up the right PATH for subsequent PowerShell
+  windows too.
+
 ## Team workflow tips
 - One person per phase/branch: `git checkout -b phase-3-dashboard`, merge via Pull Request.
 - If you change the protocol, the PR must touch `docs/02`, `protocol.py` and `fake_rover.py` together

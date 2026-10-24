@@ -173,6 +173,11 @@ Also write tools/bridge_echo_test.py: opens the port, checks BRIDGE_STATUS arriv
 ```
 ✔ Check: bridge plugged in → `python tools/bridge_echo_test.py COM5` passes; dashboard shows "LOST" (not NO_BRIDGE).
 
+Before rover_main (Phase 11) exists, `tools/espnow_beacon` is a temporary PlatformIO sketch for a
+second ESP32 that stands in for the rover: it sends golden HelloMsg/TelemMsg to the bridge's MAC,
+prints any CmdMsg it receives, and replies with AckMsg. Flash it, test the bridge end-to-end, then
+reflash rover_main once it's ready — see `tools/espnow_beacon/README.md`.
+
 ---
 
 ## Phase 11 — Firmware: rover_main   (Track B)
