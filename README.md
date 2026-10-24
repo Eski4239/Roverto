@@ -33,3 +33,7 @@ python simulator/fake_rover.py [--encoders --ina219 --lidar --camera --bmp280 --
 python -m ground_station.app --link socket://127.0.0.1:8765
 ```
 With real hardware: `python -m ground_station.app --link COM5` (Windows) / `--link /dev/ttyUSB0`.
+
+MAC addresses (see docs/PROGRESS_ROVER_MAIN.md §0):
+- Rover (rover_main): 20:50:0D:07:83:14
+- Ground station (ground_bridge): 20:50:0D:00:7D:FC

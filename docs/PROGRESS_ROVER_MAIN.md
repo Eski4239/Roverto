@@ -16,9 +16,8 @@ How to use this file
 
 ## 0. Current focus (update at the end of every session)
 
-**Now:** R0 — toolchain builds (pioarduino **55.03.312** = arduino-esp32 3.3.12, pinned per D-001).
-Victor flashing `tools/mac_reader` on both boards to read the MACs:
-`pio run -d tools/mac_reader -t upload --upload-port COM11` then `pio device monitor -b 115200 -p COM11`.
+**Now:** R0 done — toolchain builds (pioarduino **55.03.312** = arduino-esp32 3.3.12, pinned per D-001),
+both MACs read with `tools/mac_reader` (`pio run -d tools/mac_reader -t upload --upload-port COMx`).
 ⚠ Run `pio` from PowerShell / the PlatformIO terminal, **not Git Bash**: the Espressif toolchain
 installer refuses MSYS/MinGW shells ("MSys/Mingw is not supported") and the first build fails.
 **Proposed to GS:** D-016 (assisted threshold 10 cm) and Q-6 (sonar angle convention) — need Pablo's OK
@@ -27,10 +26,10 @@ and a docs/02 PR.
 
 | Board | Role | MAC |
 |-------|------|-----|
-| ESP32 #1 | rover_main | _pending_ |
-| ESP32 #2 | ground_bridge | _pending_ |
+| ESP32 #1 | rover_main | `20:50:0D:07:83:14` (ESP32-D0WD-V3 rev 3.1, 4 MB) |
+| ESP32 #2 | ground_bridge | `20:50:0D:00:7D:FC` |
 
-**Next:** fill in the MACs → R1 skeleton of `firmware/rover_main`.
+**Next:** R1 skeleton of `firmware/rover_main` (`secrets.h`: PEER_MAC = bridge MAC). Pablo: bridge `secrets.h` PEER_MAC = rover MAC.
 **Safety/mode behaviour source of truth:** docs/02 §5 (Q-3/Q-4/Q-5 agreed); D-014 is superseded.
 
 **Session ritual for any agent working on rover_main:** at start `git pull`; at the end update §0,
@@ -58,7 +57,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 
 | # | Step | Status | Test |
 |---|------|--------|------|
-| R0 | Toolchain: PlatformIO + pioarduino platform (D-001), USB drivers, read both board MACs | TODO | `pio run` builds an empty sketch; MACs written down |
+| R0 | Toolchain: PlatformIO + pioarduino platform (D-001), USB drivers, read both board MACs | **DONE** 2026-10-24 | `pio run` builds an empty sketch; MACs written down |
 | R1 | Skeleton: `platformio.ini`, `secrets.example.h`, `millis()` scheduler, `Driver` interface, `loop_hz`, serial console with `dump_golden` | TODO | `dump_golden` hex == `tests/golden/telem.hex` and `cmd.hex` (proves struct packing on the target compiler) |
 | R2 | Motors (TB6612) + safety core: watchdog 500 ms, E-STOP latch, PWM ramp, PWM_MAX | TODO | wheels in the air; bench serial drive (D-006); no command → stop ≤ 500 ms |
 | R3 | ESP-NOW link: peer from `secrets.h`, RX cb → buffer only, CmdMsg validation, HELLO / TELEM / ACK / EVENT | TODO | with bridge (or temp. second-board sketch): dashboard shows link OK |
@@ -159,7 +158,8 @@ rover_main plan (each step is flashed and tested on its own before the next):
   3.3.12), now pinned. Usable by the GS side for the bridge board too.
 - Proposed D-016 (assisted obstacle threshold 20 → 10 cm, with fresh front reading) and Q-6
   (sonar angle convention vs servo angle / unsigned `start_cdeg`). Waiting for GS review.
-- Next: Victor reads both MACs → fill §0 table → R1 skeleton.
+- Both MACs read with mac_reader and recorded in §0 (rover 20:50:0D:07:83:14, bridge 20:50:0D:00:7D:FC). R0 DONE.
+- Next: R1 skeleton.
 
 ### 2026-10-23 — GS side: Phase 6 merged
 Manual driving: two thumbsticks (tank drive) wired to the ground_bridge, reported via SK_JOYSTICK;
