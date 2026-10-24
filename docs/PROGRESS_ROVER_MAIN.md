@@ -29,7 +29,14 @@ and a docs/02 PR.
 | ESP32 #1 | rover_main | `20:50:0D:07:83:14` (ESP32-D0WD-V3 rev 3.1, 4 MB) |
 | ESP32 #2 | ground_bridge | `20:50:0D:00:7D:FC` |
 
-**Next:** R1 skeleton of `firmware/rover_main` (`secrets.h`: PEER_MAC = bridge MAC). Pablo: bridge `secrets.h` PEER_MAC = rover MAC.
+**Next: bench test T1** (no motors, no joystick, no IMU/battery) = first real `firmware/rover_main`
+(R1 + R3 + R6 + R8 + R9 + R10 stubs, real protocol, real dashboard):
+rover sends BME280 + HC-SR04 (TELEM 10 Hz, ScanMsg per sweep), dashboard SERVO (SWEEP / FIXED 90°) and
+BUZZER buttons drive the rover. "Delivery confirmed" = ESP-NOW MAC-level ACK counters on the rover +
+dashboard link OK / loss % + AckMsg RTT — no new message.
+T1 wiring (docs/04 §1): BME280 SDA 21 / SCL 22 @3.3 V · HC-SR04 TRIG 5, ECHO 19 via 1k/2k divider,
+VCC 5 V · SG90 signal 18, own 5 V + common GND + 470 µF · **passive** buzzer on 13 (D-017).
+Needs Pablo's `ground_bridge` (branch `firmware/ground-bridge`, see GS-5). Dashboard input = Keyboard.
 **Safety/mode behaviour source of truth:** docs/02 §5 (Q-3/Q-4/Q-5 agreed); D-014 is superseded.
 
 **Session ritual for any agent working on rover_main:** at start `git pull`; at the end update §0,
@@ -91,6 +98,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | D-014 | ~~**Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1).~~ | **SUPERSEDED** 2026-10-20 by the agreed Q-3/Q-4/Q-5 now in docs/02 §5 (rules 3, 4, 4b). Firmware follows docs/02, not the simulator, where they differ | sim should follow docs/02 §5 (see GS-1) |
 | D-016 | **`assisted` obstacle threshold 20 cm → 10 cm.** 20 cm is too conservative for the rover's size (Victor). For the threshold to mean anything the front reading must be fresh: in sweep mode 0° is only seen about once per ~2 s round trip, and the rover covers tens of cm in that time. Proposal: in `assisted` the rover parks the servo at front (sweep ignored) and pings every ~60 ms; forward is blocked if front < 10 cm **or** the last front reading is older than 200 ms / no echo (fail-safe). Final value confirmed by a stopping-distance measurement in R8/R12. Needs a docs/02 §5 rule 4b PR + `OBSTACLE_DIST_CM` in the simulator. | **PROPOSED** 2026-10-24 | ⚠ OBSTACLE fires at 10 cm; servo doesn't sweep in assisted. Dashboard sonar colour thresholds (config.toml) unchanged unless GS wants it |
 | D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | **AGREED** 2026-10-20 (GS: Pablo) — details in GS-2 | ⚠ GS detects a reboot by `t_ms` going backwards (GS-2) |
+| D-017 | **Passive buzzer** (Victor's choice): driven with LEDC `ledcWriteTone`. `CMD_BUZZER` set → two-tone pattern while the flag is set; firmware-only cues (no protocol change): boot jingle, short chirp when the link comes up, two falling notes on WD_STOP. Buzzer and servo must not share an LEDC timer (attach with different freq/resolution; check the servo doesn't twitch while the buzzer plays). WD_STOP silences the command tone immediately. | PROPOSED 2026-10-24 | none |
 
 ## 4. Open questions (answer here, then turn into decisions)
 
@@ -117,8 +125,20 @@ rover_main plan (each step is flashed and tested on its own before the next):
   angle = servo angle − 90 (−90…+90, left = +), encoded as `(angle × 100) mod 36000` on the wire
   (so −90° = 27000); `servo_angle_deg` in CmdMsg stays the raw servo angle (90 = front). Must be
   settled before R8. → docs/02 PR.
+  **Finding 2026-10-24:** the dashboard radar (`web/js/sonargeometry.js`) already draws angle 0…180
+  as a semicircle with 0 at the left, 90 at the top (= ahead) and 180 at the right, i.e. it shows the
+  *raw servo angle*, and the simulator sweeps 0…180 too. So −90…+90 would break the widget. Simpler
+  alternative: wire angle = raw servo angle 0…180, 90 = front, 0 = left as drawn (firmware flag
+  `SERVO_MIRROR` if the mount is reversed); fix the docs/02 §2.3 wording. **T1 uses this provisionally.**
 
 ### Notes for the GS side (found while reviewing Phases 2–4)
+- **GS-5 ground_bridge won't compile on the pinned core (2026-10-24, branch `firmware/ground-bridge`
+  @124814e):** pioarduino 55.03.312 = arduino-esp32 3.3.12 = **ESP-IDF 5.5.6**, where the ESP-NOW send
+  callback changed to `void onDataSent(const esp_now_send_info_t* info, esp_now_send_status_t status)`
+  (MAC is `info->des_addr`; checked in arduino-esp32 `release/v3.3.x` ESP32_NOW.cpp, which gates it on
+  `ESP_IDF_VERSION >= 5.5.0`). The bridge still uses `(const uint8_t* mac_addr, ...)`; same check for
+  `tools/espnow_beacon`. Minor: the recv callback runs in the WiFi task, not an ISR → `xQueueSend(q,
+  &item, 0)` instead of `xQueueSendFromISR`. T1 needs the bridge merged (or at least compiling).
 - **GS-1 Event spam in the simulator:** `RoverState.tick()` runs at 10 Hz and appends TILT,
   BATT_CRIT and BATT_LOW events on *every* tick while the condition holds (≈10 events/s, each
   using a seq). rover_main will emit them once per state change (plus WD_STOP already works that
@@ -151,6 +171,12 @@ rover_main plan (each step is flashed and tested on its own before the next):
   on the radio). Simulator gets a `--reboot-after N` flag to test this without killing the process.
 
 ## 5. Session log (newest first)
+
+### 2026-10-24 (2) — T1 bench test planned (Victor + Claude chat)
+- Planned T1 (see §0): BME280 + HC-SR04 → dashboard; dashboard SERVO/BUZZER → rover. No motors/joystick.
+- Passive buzzer chosen (D-017). Q-6: dashboard already draws raw servo angle → T1 uses 0…180, 90 = front.
+- Reviewed Pablo's WIP bridge: send-callback signature must change for IDF 5.5 (GS-5).
+- rover_main T1 firmware to be written by Victor's Claude Code (prompt given in chat).
 
 ### 2026-10-24 — rover side: R0 toolchain + MAC reader (Victor + Claude)
 - Added `tools/mac_reader` (PlatformIO): prints the WiFi STA MAC (`esp_read_mac`, the one ESP-NOW
