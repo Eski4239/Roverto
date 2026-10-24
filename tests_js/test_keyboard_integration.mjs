@@ -77,3 +77,70 @@ test("blur releases held keys", async () => {
     kb.destroy();
   }
 });
+
+test("Phase 10: ArrowRight/ArrowLeft step the servo angle, clamped, without touching drive", async () => {
+  const socket = fakeSocket();
+  const kb = new KeyboardInput(socket, { isActive: () => true });
+  kb.setSpeedLimit(1.0);
+  try {
+    window.dispatchEvent(keyEvent("keydown", "ArrowRight"));
+    let last = socket.sent[socket.sent.length - 1];
+    assert.deepEqual(last.servo, { mode: "fixed", angle_deg: 95 });
+
+    window.dispatchEvent(keyEvent("keydown", "ArrowLeft"));
+    window.dispatchEvent(keyEvent("keydown", "ArrowLeft"));
+    last = socket.sent[socket.sent.length - 1];
+    assert.deepEqual(last.servo, { mode: "fixed", angle_deg: 85 });
+
+    assert.ok(!socket.sent.some((c) => c.drive), "servo keys must never send a drive command");
+  } finally {
+    kb.destroy();
+  }
+});
+
+test("Phase 10: ArrowRight clamps at 180 degrees", async () => {
+  const socket = fakeSocket();
+  const kb = new KeyboardInput(socket, { isActive: () => true });
+  kb.setSpeedLimit(1.0);
+  try {
+    for (let i = 0; i < 30; i++) window.dispatchEvent(keyEvent("keydown", "ArrowRight"));
+    const last = socket.sent[socket.sent.length - 1];
+    assert.deepEqual(last.servo, { mode: "fixed", angle_deg: 180 });
+  } finally {
+    kb.destroy();
+  }
+});
+
+test("Phase 10: holding B sounds the buzzer once, releasing stops it", async () => {
+  const socket = fakeSocket();
+  const kb = new KeyboardInput(socket, { isActive: () => true });
+  kb.setSpeedLimit(1.0);
+  try {
+    window.dispatchEvent(keyEvent("keydown", "b"));
+    window.dispatchEvent(keyEvent("keydown", "b")); // key-repeat while held -- must not re-send
+    assert.deepEqual(
+      socket.sent.filter((c) => "buzzer" in c),
+      [{ buzzer: true }],
+    );
+
+    window.dispatchEvent(keyEvent("keyup", "b"));
+    const last = socket.sent[socket.sent.length - 1];
+    assert.deepEqual(last, { buzzer: false });
+  } finally {
+    kb.destroy();
+  }
+});
+
+test("Phase 10: blur while B is held stops the buzzer", async () => {
+  const socket = fakeSocket();
+  const kb = new KeyboardInput(socket, { isActive: () => true });
+  kb.setSpeedLimit(1.0);
+  try {
+    window.dispatchEvent(keyEvent("keydown", "b"));
+    window.dispatchEvent(new Event("blur"));
+    const last = socket.sent[socket.sent.length - 1];
+    assert.deepEqual(last, { buzzer: false });
+  } finally {
+    kb.destroy();
+  }
+});

@@ -110,7 +110,7 @@ config.toml via the backend. Redraw charts at most 2 Hz.
 
 ## Phase 6 — Control + safety
 ```
-Implement CONTROL from docs/03 §3: WASD/arrows, speed limit, Shift boost, mode, servo sweep/fixed,
+Implement CONTROL from docs/03 §3: WASD drive, speed limit, Shift boost, mode, servo sweep/fixed,
 buzzer. Keys act only while the page is focused; blur/close -> drive 0. E-STOP sets the estop flag
 on the next 3 CmdMsgs immediately (don't wait for the 10 Hz tick); reset needs a confirm.
 Show wd_ok and last_cmd_age_ms. Simulator tests: stop CmdMsg -> WD_STOP within 600 ms; estop

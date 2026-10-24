@@ -488,7 +488,7 @@ dim demo room), works at 1366×768 laptop resolution, no internet required.
 │ "CAMERA NOT INSTALLED"        │ click-to-set waypoint                            │
 ├───────────────┬───────────────┴───────────────┬──────────────────────────────────┤
 │ ENVIRONMENT   │ ROVER HEALTH                  │ CONTROL                          │
-│ temp  22.4 °C │ motors L/R: cmd vs rpm bars   │ WASD / arrows / gamepad          │
+│ temp  22.4 °C │ motors L/R: cmd vs rpm bars   │ WASD drive / arrows pan / gamepad│
 │ hum   41 %    │ attitude: roll/pitch gauge,   │ speed limit slider               │
 │ press 1012 hPa│   yaw compass                 │ mode: manual|assisted|auto       │
 │ lux   340     │ sonar: distance + mini radar  │ servo: sweep | fixed [angle]     │
@@ -532,6 +532,9 @@ and show their age ("12 s ago").
   apart). Reset needs a confirm click → `estop_reset:true`.
 - Drive: `W/S` forward/back, `A/D` turn, `Shift` = boost to speed limit. Gamepad via the browser
   Gamepad API (optional, later).
+- Servo pan: `ArrowLeft`/`ArrowRight` step the servo ±5° in fixed mode (freed up from driving for a
+  future camera tilt/pan mount). `B` sounds the buzzer momentarily (same as the on-screen BUZZER
+  button), stopping on key-up.
 - If the browser tab loses focus or closes → backend stops sending drive values (sends zeros) →
   rover watchdog is the final backstop.
 
@@ -1058,7 +1061,7 @@ config.toml via the backend. Redraw charts at most 2 Hz.
 
 ### Phase 6 — Control + safety
 ```
-Implement CONTROL from docs/03 §3: WASD/arrows, speed limit, Shift boost, mode, servo sweep/fixed,
+Implement CONTROL from docs/03 §3: WASD drive, speed limit, Shift boost, mode, servo sweep/fixed,
 buzzer. Keys act only while the page is focused; blur/close -> drive 0. E-STOP sets the estop flag
 on the next 3 CmdMsgs immediately (don't wait for the 10 Hz tick); reset needs a confirm.
 Show wd_ok and last_cmd_age_ms. Simulator tests: stop CmdMsg -> WD_STOP within 600 ms; estop
