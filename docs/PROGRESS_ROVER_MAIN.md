@@ -16,22 +16,13 @@ How to use this file
 
 ## 0. Current focus (update at the end of every session)
 
-**Now:** GS Phase 6 (joystick/keyboard controls) done. R0 — Victor installing PlatformIO in VS Code.
-USB driver done.
-**R0 test project** (outside the repo, e.g. `C:\dev\mac_test`) to validate the pioarduino toolchain
-and read each board's MAC:
-```ini
-[env:esp32]
-platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip
-board = esp32doit-devkit-v1
-framework = arduino
-monitor_speed = 115200
-```
-```cpp
-#include <WiFi.h>
-void setup() { Serial.begin(115200); WiFi.mode(WIFI_STA); }
-void loop()  { Serial.println(WiFi.macAddress()); delay(1000); }
-```
+**Now:** R0 — toolchain builds (pioarduino **55.03.312** = arduino-esp32 3.3.12, pinned per D-001).
+Victor flashing `tools/mac_reader` on both boards to read the MACs:
+`pio run -d tools/mac_reader -t upload --upload-port COM11` then `pio device monitor -b 115200 -p COM11`.
+⚠ Run `pio` from PowerShell / the PlatformIO terminal, **not Git Bash**: the Espressif toolchain
+installer refuses MSYS/MinGW shells ("MSys/Mingw is not supported") and the first build fails.
+**Proposed to GS:** D-016 (assisted threshold 10 cm) and Q-6 (sonar angle convention) — need Pablo's OK
+and a docs/02 PR.
 **Board MACs** (WiFi STA MAC; boards physically labelled):
 
 | Board | Role | MAC |
@@ -99,6 +90,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | D-012 | **Simulator parity for CmdMsg handling** (mirror `fake_rover.py` `apply_cmd`): ack rule (a) is not evaluated on the first CmdMsg after boot (no previous to compare); if one CmdMsg carries both `estop` and `estop_reset`, reset wins (latch released); servo and mode are applied even while E-STOP is latched, drive is not. | **AGREED** 2026-10-20 | none (matches sim) |
 | D-013 | **Motors provisional: Arduino-kit TT gear motors (3–6 V).** `PWM_MAX` is a constant in `config.h`; until the TB6612 VM supply is confirmed, default **PWM_MAX = 120** (≈6 V average from a 12.6 V battery). `drive = ±1.0` maps to ±PWM_MAX. Re-tune when the final motors are chosen. | **AGREED** 2026-10-20 | ⚠ `pwm_l/r` on the wire peak at ±PWM_MAX, not ±255 |
 | D-014 | ~~**Provisional safety behaviour = simulator behaviour** until Q-3/Q-4/Q-5 are decided, so the dashboard behaves the same with sim and real rover: TILT auto-resumes when back under the limit; BATT_LOW < 10.5 V, BATT_CRIT < 9.9 V (drive limited to 30 %); every mode drives like `manual`. Firmware adds what the sim lacks: hysteresis (TILT resume < 30°, battery +0.2 V) and events rate-limited (one per state change, see GS-1).~~ | **SUPERSEDED** 2026-10-20 by the agreed Q-3/Q-4/Q-5 now in docs/02 §5 (rules 3, 4, 4b). Firmware follows docs/02, not the simulator, where they differ | sim should follow docs/02 §5 (see GS-1) |
+| D-016 | **`assisted` obstacle threshold 20 cm → 10 cm.** 20 cm is too conservative for the rover's size (Victor). For the threshold to mean anything the front reading must be fresh: in sweep mode 0° is only seen about once per ~2 s round trip, and the rover covers tens of cm in that time. Proposal: in `assisted` the rover parks the servo at front (sweep ignored) and pings every ~60 ms; forward is blocked if front < 10 cm **or** the last front reading is older than 200 ms / no echo (fail-safe). Final value confirmed by a stopping-distance measurement in R8/R12. Needs a docs/02 §5 rule 4b PR + `OBSTACLE_DIST_CM` in the simulator. | **PROPOSED** 2026-10-24 | ⚠ OBSTACLE fires at 10 cm; servo doesn't sweep in assisted. Dashboard sonar colour thresholds (config.toml) unchanged unless GS wants it |
 | D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | **AGREED** 2026-10-20 (GS: Pablo) — details in GS-2 | ⚠ GS detects a reboot by `t_ms` going backwards (GS-2) |
 
 ## 4. Open questions (answer here, then turn into decisions)
@@ -119,6 +111,13 @@ rover_main plan (each step is flashed and tested on its own before the next):
   forward drive blocked while front sonar < 20 cm (OBSTACLE event); `auto` = rejected
   (AckMsg ok=0, CMD_REJECTED) until navigation exists. → needs a docs/02 PR.
 - **Q-3/Q-4/Q-5 AGREED 2026-10-20 (GS: Pablo) as proposed:** TILT auto-resumes when |roll|,|pitch| < 30° and a zero-drive CmdMsg has been received; BATT_LOW < 10.5 V (0.2 V hysteresis, 3 s persistence, same for BATT_CRIT); `assisted` = manual with forward drive blocked while front sonar < 20 cm (OBSTACLE event); `auto` rejected (AckMsg ok=0 + CMD_REJECTED) until navigation exists. Written into docs/02 §5.
+
+- **Q-6 Sonar angle convention:** docs/02 §2.3 says rover frame, 0° = front, CCW+, but the servo
+  (`servo_angle_deg` 0–180 in CmdMsg) has front at ~90°, and `ScanMsg.start_cdeg` is `uint16`
+  (no negative angles). The simulator sweeps 0–180 and treats 0 as front. Proposal: scan/telem
+  angle = servo angle − 90 (−90…+90, left = +), encoded as `(angle × 100) mod 36000` on the wire
+  (so −90° = 27000); `servo_angle_deg` in CmdMsg stays the raw servo angle (90 = front). Must be
+  settled before R8. → docs/02 PR.
 
 ### Notes for the GS side (found while reviewing Phases 2–4)
 - **GS-1 Event spam in the simulator:** `RoverState.tick()` runs at 10 Hz and appends TILT,
@@ -153,6 +152,14 @@ rover_main plan (each step is flashed and tested on its own before the next):
   on the radio). Simulator gets a `--reboot-after N` flag to test this without killing the process.
 
 ## 5. Session log (newest first)
+
+### 2026-10-24 — rover side: R0 toolchain + MAC reader (Victor + Claude)
+- Added `tools/mac_reader` (PlatformIO): prints the WiFi STA MAC (`esp_read_mac`, the one ESP-NOW
+  uses) and a ready-to-paste `PEER_MAC` line. Builds with pioarduino 55.03.312 (arduino-esp32
+  3.3.12), now pinned. Usable by the GS side for the bridge board too.
+- Proposed D-016 (assisted obstacle threshold 20 → 10 cm, with fresh front reading) and Q-6
+  (sonar angle convention vs servo angle / unsigned `start_cdeg`). Waiting for GS review.
+- Next: Victor reads both MACs → fill §0 table → R1 skeleton.
 
 ### 2026-10-23 — GS side: Phase 6 merged
 Manual driving: two thumbsticks (tank drive) wired to the ground_bridge, reported via SK_JOYSTICK;
