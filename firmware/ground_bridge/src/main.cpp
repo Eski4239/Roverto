@@ -75,12 +75,12 @@ void onDataRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
   item.len = (uint8_t)len;
   memcpy(item.data, data, len);
   item.rssi = info->rx_ctrl ? info->rx_ctrl->rssi : 0;
-  BaseType_t woken = pdFALSE;
-  xQueueSendFromISR(espnowRxQueue, &item, &woken);
+  xQueueSend(espnowRxQueue, &item, 0); // WiFi task, not an ISR; never block (full -> drop)
 }
 
-void onDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
-  (void)mac_addr;
+// ESP-IDF 5.5 (arduino-esp32 3.3.x) signature: the peer MAC is info->des_addr.
+void onDataSent(const esp_now_send_info_t* info, esp_now_send_status_t status) {
+  (void)info;
   if (status == ESP_NOW_SEND_SUCCESS) tx_ok++;
   else tx_fail++;
 }
