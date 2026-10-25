@@ -29,14 +29,19 @@ and a docs/02 PR.
 | ESP32 #1 | rover_main | `20:50:0D:07:83:14` (ESP32-D0WD-V3 rev 3.1, 4 MB) |
 | ESP32 #2 | ground_bridge | `20:50:0D:00:7D:FC` |
 
-**Next: bench test T1** (no motors, no joystick, no IMU/battery) = first real `firmware/rover_main`
+**Now: bench test T1 — firmware written and compiling** (`firmware/rover_main`, 2026-10-25); waiting for
+Victor's flash + serial output. Flash: `pio run -d firmware/rover_main -t upload --upload-port COM11`,
+then `pio device monitor -b 115200 -p COM11` → `hw`, `status`, `dump_golden`.
+Bridge fix for GS-5 in PR `fix/bridge-idf55-send-cb` (Pablo to review/merge before T1 with the dashboard).
+
+**T1 scope** (no motors, no joystick, no IMU/battery) = first real `firmware/rover_main`
 (R1 + R3 + R6 + R8 + R9 + R10 stubs, real protocol, real dashboard):
 rover sends BME280 + HC-SR04 (TELEM 10 Hz, ScanMsg per sweep), dashboard SERVO (SWEEP / FIXED 90°) and
 BUZZER buttons drive the rover. "Delivery confirmed" = ESP-NOW MAC-level ACK counters on the rover +
 dashboard link OK / loss % + AckMsg RTT — no new message.
 T1 wiring (docs/04 §1): BME280 SDA 21 / SCL 22 @3.3 V · HC-SR04 TRIG 5, ECHO 19 via 1k/2k divider,
 VCC 5 V · SG90 signal 18, own 5 V + common GND + 470 µF · **passive** buzzer on 13 (D-017).
-Needs Pablo's `ground_bridge` (branch `firmware/ground-bridge`, see GS-5). Dashboard input = Keyboard.
+Needs Pablo's `ground_bridge` with the GS-5 fix (PR `fix/bridge-idf55-send-cb`). Dashboard input = Keyboard.
 **Safety/mode behaviour source of truth:** docs/02 §5 (Q-3/Q-4/Q-5 agreed); D-014 is superseded.
 
 **Session ritual for any agent working on rover_main:** at start `git pull`; at the end update §0,
@@ -65,16 +70,16 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | # | Step | Status | Test |
 |---|------|--------|------|
 | R0 | Toolchain: PlatformIO + pioarduino platform (D-001), USB drivers, read both board MACs | **DONE** 2026-10-24 | `pio run` builds an empty sketch; MACs written down |
-| R1 | Skeleton: `platformio.ini`, `secrets.example.h`, `millis()` scheduler, `Driver` interface, `loop_hz`, serial console with `dump_golden` | TODO | `dump_golden` hex == `tests/golden/telem.hex` and `cmd.hex` (proves struct packing on the target compiler) |
+| R1 | Skeleton: `platformio.ini`, `secrets.example.h`, `millis()` scheduler, `Driver` interface, `loop_hz`, serial console with `dump_golden` | **T1 build: compiles, untested on hw** 2026-10-25 | `dump_golden` hex == `tests/golden/telem.hex` and `cmd.hex` (proves struct packing on the target compiler) |
 | R2 | Motors (TB6612) + safety core: watchdog 500 ms, E-STOP latch, PWM ramp, PWM_MAX | TODO | wheels in the air; bench serial drive (D-006); no command → stop ≤ 500 ms |
-| R3 | ESP-NOW link: peer from `secrets.h`, RX cb → buffer only, CmdMsg validation, HELLO / TELEM / ACK / EVENT | TODO | with bridge (or temp. second-board sketch): dashboard shows link OK |
+| R3 | ESP-NOW link: peer from `secrets.h`, RX cb → buffer only, CmdMsg validation, HELLO / TELEM / ACK / EVENT | **T1 build: compiles, untested on hw** 2026-10-25 | with bridge (or temp. second-board sketch): dashboard shows link OK |
 | R4 | IMU MPU-6050: tolerant WHO_AM_I, gyro bias at boot, complementary filter 50 Hz, TILT cut-off | TODO | tilt by hand > 35° → motors stop + TILT event |
 | R5 | Battery: divider (D-002), 2-point calibration, SoC LUT, filtering, BATT_LOW / BATT_CRIT | TODO | ±0.1 V vs multimeter |
-| R6 | Env: chip-ID detection BME280 / BMP280, DHT11 fallback, `alt_m` reference | TODO | breathe → hum ↑; lift 1 m → alt ≈ +1 m |
-| R7 | BH1750 light | TODO | cover / torch → lux changes |
-| R8 | HC-SR04 (non-blocking, D-005) + SG90 sweep → ScanMsg, OBSTACLE event | TODO | box at 50 cm shows in sweep |
-| R9 | Buzzer, sys stats, `reset_reason`, BOOT event | TODO | |
-| R10 | Stub drivers (present=false, NaN): encoders, INA219, LiDAR | TODO | HELLO bits 5/6/8 = 0 |
+| R6 | Env: chip-ID detection BME280 / BMP280, DHT11 fallback, `alt_m` reference | **T1 build: compiles, untested on hw** 2026-10-25 | breathe → hum ↑; lift 1 m → alt ≈ +1 m |
+| R7 | BH1750 light | **T1 build: compiles, untested on hw** 2026-10-25 | cover / torch → lux changes |
+| R8 | HC-SR04 (non-blocking, D-005) + SG90 sweep → ScanMsg, OBSTACLE event | **T1 build: compiles, untested on hw** 2026-10-25 | box at 50 cm shows in sweep |
+| R9 | Buzzer, sys stats, `reset_reason`, BOOT event | **T1 build: compiles, untested on hw** 2026-10-25 | |
+| R10 | Stub drivers (present=false, NaN): encoders, INA219, LiDAR | **T1 build: compiles, untested on hw** 2026-10-25 | HELLO bits 5/6/8 = 0 |
 | R11 | End-to-end with real ground station (`--link auto`) | TODO | unplug bridge → wheels stop ≤ 0.5 s |
 | R12 | Bench test (Phase 12, docs/07) incl. ESP-NOW range | TODO | |
 
@@ -178,6 +183,29 @@ rover_main plan (each step is flashed and tested on its own before the next):
   per-model gating) — no GS changes needed once R6 lands.
 
 ## 5. Session log (newest first)
+
+### 2026-10-25 — rover side: first real rover_main for T1 (Victor + Claude)
+- `firmware/rover_main` (pioarduino 55.03.312): `Driver` interface (docs/01 §5.1, plus `fillHello()`
+  for hw bits), `millis()` scheduler (10 ms control tick, 100 ms TELEM, 1 s slow, 5 s HELLO), no
+  `delay()`/`String` in the loop. Modules: `radio` (ESP-NOW, IDF 5.5 callbacks, RX → FreeRTOS queue),
+  `messages` (single seq from 0, D-003/D-015), `control` (D-010 validation, watchdog, E-STOP latch,
+  §6.8 acks, auto rejected, D-012 parity), `console` (`status`, `dump_golden`, `hw`), `golden`.
+- Drivers: env (chip ID 0xD0 at 0x76/0x77 → BME280 / BMP280; boot pressure → `alt_m`); BH1750
+  autodetected at 0x23/0x5C (own I2C, absent → NaN); scanner = HC-SR04 by GPIO interrupt (D-005,
+  25 ms timeout) + SG90 on LEDC 50 Hz/14-bit, sweep 0→180→0 in 10° steps, one ScanMsg per pass
+  (19 pts, dist_cm[angle/10]), fixed mode pings every 60 ms; buzzer (D-017) note queue + siren,
+  2 kHz/10-bit so it gets its own LEDC timer; stubs for IMU, battery, motors, encoders, INA219, LiDAR.
+- Choices worth knowing on the GS side: `loop_hz` = 100 Hz control ticks really executed per second
+  (≈100, falls if something blocks > 10 ms; raw loop passes/s only on the console).
+  `last_cmd_age_ms` = 65535 until the first valid CmdMsg. `rssi_dbm` = 0 until then.
+  WD_STOP is also sent once ~500 ms after boot if no command arrives (same as the simulator), but the
+  falling-notes cue only plays when a live link is lost. No ESTOP event (simulator doesn't send one
+  either). Sonar wire angle = raw servo 0–180, 90 = front (Q-6 provisional), `SERVO_MIRROR` in config.h.
+- Not built: DHT11 fallback (no pin reserved in docs/04 §1), battery/TILT rules (come with R4/R5
+  drivers; with NaN they can't fire), assisted obstacle stop (no motors; D-016 still PROPOSED).
+- GS-5: minimal bridge fix (send-cb signature, `xQueueSend` in the recv cb) on branch
+  `fix/bridge-idf55-send-cb`, compiles; PR for Pablo.
+- Next: Victor flashes, checks `dump_golden` vs tests/golden, then T1 with bridge + dashboard.
 
 ### 2026-10-24 (2) — T1 bench test planned (Victor + Claude chat)
 - Planned T1 (see §0): BME280 + HC-SR04 → dashboard; dashboard SERVO/BUZZER → rover. No motors/joystick.
