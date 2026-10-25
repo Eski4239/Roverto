@@ -31,7 +31,7 @@ and a docs/02 PR.
 **Now: bench test T1 — firmware written and compiling** (`firmware/rover_main`, 2026-10-25); waiting for
 Victor's flash + serial output. Flash: `pio run -d firmware/rover_main -t upload --upload-port COM11`,
 then `pio device monitor -b 115200 -p COM11` → `hw`, `status`, `dump_golden`.
-Bridge fix for GS-5 in PR `fix/bridge-idf55-send-cb` (Pablo to review/merge before T1 with the dashboard).
+Bridge fix for GS-5 merged (PR #7) → ground_bridge on main builds on 55.03.312.
 
 **T1 scope** (no motors, no joystick, no IMU/battery) = first real `firmware/rover_main`
 (R1 + R3 + R6 + R8 + R9 + R10 stubs, real protocol, real dashboard):
@@ -43,7 +43,9 @@ VCC 5 V · SG90 signal 18 · **passive** buzzer on 13 (D-017).
 T1 power (bench only): SG90 + HC-SR04 from the DevKit **VIN** (USB 5 V) with 470 µF across the servo's
 5 V/GND; switch the servo to its own 5 V (common GND) only if the ESP32 resets (BROWNOUT). The real
 rover keeps the separate servo rail of docs/04 §1 / §G.
-Needs Pablo's `ground_bridge` with the GS-5 fix (PR `fix/bridge-idf55-send-cb`). Dashboard input = Keyboard.
+Firmware: the servo gets no pulses until 1.5 s after boot (`SERVO_START_DELAY_MS`), so its first big move
+doesn't coincide with the WiFi start-up current peak on the shared USB 5 V.
+Needs `ground_bridge` from main (GS-5 fix merged). Dashboard input = Keyboard.
 
 **T1 checklist** (who does what)
 - **Victor (rover):**
@@ -52,9 +54,10 @@ Needs Pablo's `ground_bridge` with the GS-5 fix (PR `fix/bridge-idf55-send-cb`).
   3. `pio device monitor -b 115200 -p COM11` → `hw` (env = BME280, chip id 0x60), `status`
      (hand over the sonar, breathe on the BME280), `dump_golden` (must equal `tests/golden/telem.hex`
      and `cmd.hex`). Paste the output into the session.
-  4. Open the PR for `fix/bridge-idf55-send-cb`.
+  4. If the ESP32 resets when the servo moves (boot line says `reset BROWNOUT`): servo to its own 5 V,
+     common GND.
 - **Pablo (GS):**
-  1. Review + merge PR `fix/bridge-idf55-send-cb` (GS-5: bridge doesn't compile on 55.03.312 without it).
+  1. `git pull` (GS-5 fix is on main since PR #7).
   2. `firmware/ground_bridge/include/secrets.h` = copy of `secrets.example.h` (PEER_MAC = rover
      `20:50:0D:07:83:14`, channel 11).
   3. Flash the bridge board (`20:50:0D:00:7D:FC`): `pio run -d firmware/ground_bridge -t upload --upload-port COMx`.
@@ -208,6 +211,12 @@ rover_main plan (each step is flashed and tested on its own before the next):
   per-model gating) — no GS changes needed once R6 lands.
 
 ## 5. Session log (newest first)
+
+### 2026-10-25 (2) — rover side: T1 servo on USB 5 V (Victor + Claude)
+- T1 power changed (bf80d12): SG90 + HC-SR04 from the DevKit VIN. Firmware now keeps the servo idle
+  (LEDC duty 0) for `SERVO_START_DELAY_MS` = 1.5 s after boot, then starts the sweep (or the fixed
+  angle if a CmdMsg already asked for it), so the servo's first move doesn't add to the WiFi start-up
+  peak. Pins unchanged. Checklist in §0 updated: PR #7 merged, brownout fallback step added.
 
 ### 2026-10-25 — rover side: first real rover_main for T1 (Victor + Claude)
 - `firmware/rover_main` (pioarduino 55.03.312): `Driver` interface (docs/01 §5.1, plus `fillHello()`

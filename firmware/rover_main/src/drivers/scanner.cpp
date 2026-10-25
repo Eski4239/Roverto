@@ -42,8 +42,9 @@ bool ScannerDriver::begin() {
   attachInterrupt(digitalPinToInterrupt(PIN_SONAR_ECHO), onEchoEdge, CHANGE);
 
   // Different freq/resolution from the buzzer -> the LEDC allocator gives the servo its own timer.
+  // Duty stays 0 (no pulses, servo idle) until update() starts the sweep after SERVO_START_DELAY_MS.
   ledcAttach(PIN_SERVO, SERVO_FREQ_HZ, SERVO_RES_BITS);
-  startPass(0);  // power-on default = sweep, like the simulator
+  start_at_ms_ = millis() + SERVO_START_DELAY_MS;
 
   // An HC-SR04 can't be detected without an echo; it is part of this build's hardware (docs/04).
   present = true;
@@ -78,6 +79,11 @@ void ScannerDriver::startPass(uint8_t start_angle) {
 
 void ScannerDriver::setMode(bool fixed, uint8_t angle_deg) {
   if (angle_deg > 180) angle_deg = 180;
+  if (!started_) {  // just remember it; update() applies it when the servo starts
+    fixed_ = fixed;
+    fixed_angle_ = angle_deg;
+    return;
+  }
   if (fixed) {
     bool changed = !fixed_ || angle_deg != fixed_angle_;
     fixed_ = true;
@@ -140,6 +146,14 @@ void ScannerDriver::onPingResult(float dist_cm) {
 
 void ScannerDriver::update() {
   uint32_t now_ms = millis();
+  if (!started_) {
+    if ((int32_t)(now_ms - start_at_ms_) < 0) return;
+    started_ = true;
+    // power-on default = sweep, like the simulator, unless a CmdMsg already asked for fixed
+    if (fixed_) moveServo(fixed_angle_);
+    else startPass(0);
+    return;
+  }
   if (state_ == State::Pinging) {
     if (echo_done) {
       onPingResult((float)(echo_fall_us - echo_rise_us) / SONAR_US_PER_CM);

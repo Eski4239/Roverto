@@ -45,6 +45,9 @@ static const uint8_t SERVO_STEP_DEG = 10;              // sweep 0..180 -> 19 poi
 static const uint32_t SERVO_SETTLE_BASE_MS = 50;       // settle = base + per_deg * |move|
 static const uint32_t SERVO_SETTLE_PER_DEG_MS = 2;
 static const uint8_t SERVO_DEFAULT_ANGLE = 90;         // 90 = front (Q-6 provisional)
+// T1 powers the servo from the DevKit VIN (USB 5 V): its first big move must not coincide with the
+// WiFi start-up current peak, or the ESP32 can brown out. No servo pulses until this long after boot.
+static const uint32_t SERVO_START_DELAY_MS = 1500;
 // 1 if the servo is mounted reversed: the wire angle stays 0 = left, 90 = front, 180 = right;
 // only the pulse sent to the servo is mirrored.
 #define SERVO_MIRROR 0

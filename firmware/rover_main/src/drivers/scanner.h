@@ -35,6 +35,8 @@ class ScannerDriver : public Driver {
   void onPingResult(float dist_cm);
 
   State state_ = State::Settling;
+  bool started_ = false;           // servo idle until SERVO_START_DELAY_MS after boot
+  uint32_t start_at_ms_ = 0;
   bool fixed_ = false;
   uint8_t fixed_angle_ = 90;
   uint8_t servo_angle_ = 90;       // last angle written to the servo (wire convention)
