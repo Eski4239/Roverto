@@ -39,7 +39,10 @@ rover sends BME280 + HC-SR04 (TELEM 10 Hz, ScanMsg per sweep), dashboard SERVO (
 BUZZER buttons drive the rover. "Delivery confirmed" = ESP-NOW MAC-level ACK counters on the rover +
 dashboard link OK / loss % + AckMsg RTT — no new message.
 T1 wiring (docs/04 §1): BME280 SDA 21 / SCL 22 @3.3 V · HC-SR04 TRIG 5, ECHO 19 via 1k/2k divider,
-VCC 5 V · SG90 signal 18, own 5 V + common GND + 470 µF · **passive** buzzer on 13 (D-017).
+VCC 5 V · SG90 signal 18 · **passive** buzzer on 13 (D-017).
+T1 power (bench only): SG90 + HC-SR04 from the DevKit **VIN** (USB 5 V) with 470 µF across the servo's
+5 V/GND; switch the servo to its own 5 V (common GND) only if the ESP32 resets (BROWNOUT). The real
+rover keeps the separate servo rail of docs/04 §1 / §G.
 Needs Pablo's `ground_bridge` with the GS-5 fix (PR `fix/bridge-idf55-send-cb`). Dashboard input = Keyboard.
 
 **T1 checklist** (who does what)
