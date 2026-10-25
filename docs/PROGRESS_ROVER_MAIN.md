@@ -16,8 +16,7 @@ How to use this file
 
 ## 0. Current focus (update at the end of every session)
 
-**Now:** R0 done — toolchain builds (pioarduino **55.03.312** = arduino-esp32 3.3.12, pinned per D-001),
-both MACs read with `tools/mac_reader` (`pio run -d tools/mac_reader -t upload --upload-port COMx`).
+Toolchain: pioarduino **55.03.312** = arduino-esp32 3.3.12 (pinned, D-001).
 ⚠ Run `pio` from PowerShell / the PlatformIO terminal, **not Git Bash**: the Espressif toolchain
 installer refuses MSYS/MinGW shells ("MSys/Mingw is not supported") and the first build fails.
 **Proposed to GS:** D-016 (assisted threshold 10 cm) and Q-6 (sonar angle convention) — need Pablo's OK
@@ -42,6 +41,29 @@ dashboard link OK / loss % + AckMsg RTT — no new message.
 T1 wiring (docs/04 §1): BME280 SDA 21 / SCL 22 @3.3 V · HC-SR04 TRIG 5, ECHO 19 via 1k/2k divider,
 VCC 5 V · SG90 signal 18, own 5 V + common GND + 470 µF · **passive** buzzer on 13 (D-017).
 Needs Pablo's `ground_bridge` with the GS-5 fix (PR `fix/bridge-idf55-send-cb`). Dashboard input = Keyboard.
+
+**T1 checklist** (who does what)
+- **Victor (rover):**
+  1. Wire as above, USB unplugged.
+  2. `pio run -d firmware/rover_main -t upload --upload-port COM11`
+  3. `pio device monitor -b 115200 -p COM11` → `hw` (env = BME280, chip id 0x60), `status`
+     (hand over the sonar, breathe on the BME280), `dump_golden` (must equal `tests/golden/telem.hex`
+     and `cmd.hex`). Paste the output into the session.
+  4. Open the PR for `fix/bridge-idf55-send-cb`.
+- **Pablo (GS):**
+  1. Review + merge PR `fix/bridge-idf55-send-cb` (GS-5: bridge doesn't compile on 55.03.312 without it).
+  2. `firmware/ground_bridge/include/secrets.h` = copy of `secrets.example.h` (PEER_MAC = rover
+     `20:50:0D:07:83:14`, channel 11).
+  3. Flash the bridge board (`20:50:0D:00:7D:FC`): `pio run -d firmware/ground_bridge -t upload --upload-port COMx`.
+  4. `python -m ground_station.app --link COMx` (bridge port), open the dashboard, input = Keyboard.
+- **Together (pass criteria):**
+  - Link OK, loss % low, RTT shown; HELLO shows env bme280, sonar + servo, buzzer; IMU/battery/etc NOT INSTALLED.
+  - Env tiles show temp / hum / press / alt; radar follows the sweep, ScanMsg every ~1.6 s.
+  - SERVO SWEEP / FIXED 90 moves the servo; BUZZER → two-tone siren on the rover; first command → chirp.
+  - E-STOP → `estop` shown latched; reset clears it.
+  - Unplug the bridge → falling two notes + WD_STOP within 0.5 s; replug → link back, chirp.
+  - Note RSSI both ways and anything odd (servo twitch while the buzzer plays → LEDC timer clash).
+
 **Safety/mode behaviour source of truth:** docs/02 §5 (Q-3/Q-4/Q-5 agreed); D-014 is superseded.
 
 **Session ritual for any agent working on rover_main:** at start `git pull`; at the end update §0,
