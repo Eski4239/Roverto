@@ -39,7 +39,7 @@ rover sends BME280 + HC-SR04 (TELEM 10 Hz, ScanMsg per sweep), dashboard SERVO (
 BUZZER buttons drive the rover. "Delivery confirmed" = ESP-NOW MAC-level ACK counters on the rover +
 dashboard link OK / loss % + AckMsg RTT — no new message.
 T1 wiring (docs/04 §1): BME280 SDA 21 / SCL 22 @3.3 V · HC-SR04 TRIG 5, ECHO 19 via 1k/2k divider,
-VCC 5 V · SG90 signal 18 · **passive** buzzer on 13 (D-017).
+VCC 5 V · SG90 signal 18 · **passive** buzzer on **15** (D-017; moved from 13).
 T1 power (bench only): SG90 + HC-SR04 from the DevKit **VIN** (USB 5 V) with 470 µF across the servo's
 5 V/GND; switch the servo to its own 5 V (common GND) only if the ESP32 resets (BROWNOUT). The real
 rover keeps the separate servo rail of docs/04 §1 / §G.
@@ -211,6 +211,11 @@ rover_main plan (each step is flashed and tested on its own before the next):
   per-model gating) — no GS changes needed once R6 lands.
 
 ## 5. Session log (newest first)
+
+### 2026-10-25 (3) — rover side: buzzer moved to GPIO15
+- Buzzer pin 13 → 15 for tidier wiring (Victor). GPIO15 is a strapping pin (MTDO): held low at boot it
+  only mutes the ROM boot log, so it's safe for a buzzer; possible short click at power-on.
+  `config.h` + docs/04 §1 updated (13 is now spare). No GS impact.
 
 ### 2026-10-25 (2) — rover side: T1 servo on USB 5 V (Victor + Claude)
 - T1 power changed (bf80d12): SG90 + HC-SR04 from the DevKit VIN. Firmware now keeps the servo idle

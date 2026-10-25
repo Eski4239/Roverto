@@ -28,11 +28,11 @@ Reserve these now so future hardware never forces a rewire. Verify against your 
 | TB6612 STBY           | 23          | |
 | Servo SG90            | 18          | own 5 V supply, common GND |
 | HC-SR04 TRIG / ECHO   | 5 / 19      | **ECHO is 5 V → divider (e.g. 1 k / 2 k) to 3.3 V** |
-| Buzzer                | 13          | |
+| Buzzer                | 15          | strapping pin (low at boot only mutes the ROM boot log); was 13, moved for tidier wiring (2026-10-25) |
 | Battery divider       | 34 (ADC1)   | input-only pin, fine |
 | Encoder L / R  [future] | 36 / 39   | input-only, use module's pull-ups |
 | LiDAR RX (UART2) [future] | 16      | LD06 TX → GPIO16; LD06 needs 5 V, ~180 mA |
-| Spare                 | 17, 14, 15, 2 | |
+| Spare                 | 17, 14, 13, 2 | |
 
 ## 1b. Pin reservation (ground_bridge joysticks)
 These GPIOs are on the **ground_bridge** ESP32, a separate board from `rover_main` — numbers

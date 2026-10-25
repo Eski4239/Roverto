@@ -11,7 +11,8 @@ static const int PIN_I2C_SCL = 22;
 static const int PIN_SONAR_TRIG = 5;
 static const int PIN_SONAR_ECHO = 19;   // 5 V echo -> 1k/2k divider -> 3.3 V
 static const int PIN_SERVO = 18;
-static const int PIN_BUZZER = 13;       // passive buzzer (D-017)
+static const int PIN_BUZZER = 15;       // passive buzzer (D-017). Strapping pin: low at boot only
+                                        // mutes the ROM boot log; may click once at power-on
 // Reserved for later steps (docs/04 §1): TB6612 25/26/27, 32/33/4, STBY 23; battery 34;
 // encoders 36/39; LiDAR RX 16.
 
