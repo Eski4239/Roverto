@@ -494,3 +494,151 @@ def test_f5_scan_fragment_passes_real_recv_wall_ms_to_on_rover_seq():
         f"expected on_rover_seq to receive now_ms={now_ms} as recv_wall_ms, "
         f"got {recorded_wall_ms} (likely defaulted to time.time() instead)"
     )
+
+
+def _telem_sonar(seq: int, t: int, angle_deg: Optional[float], dist_cm: Optional[float]) -> TelemMsg:
+    msg = _telem(seq, t)
+    msg.sonar.angle_deg = angle_deg
+    msg.sonar.dist_cm = dist_cm
+    return msg
+
+
+def test_sonar_recent_loses_or_repeats_no_samples_under_jitter():
+    """F-radar: every TELEM's sonar sample must reach one client exactly
+    once via snapshot()'s sonar_recent/sonar_cursor, regardless of how the
+    10 Hz TELEM feed and that client's own 10 Hz snapshot push drift
+    relative to each other -- simulate that drift by polling snapshot() a
+    jittered, variable number of times between TELEM frames (0, 1, 2 or 3)
+    and check the returned sonar_recent lists, concatenated in order,
+    match every ingested sample that existed at the time of each poll,
+    with none lost or duplicated. A client's first-ever poll (cursor=None)
+    sees only the latest sample at that point (same as a freshly connected
+    tab, not a backlog flood), so `expected` is built the same way: tag
+    each sample "seen by the first poll" only if no poll happened before it."""
+    import random
+
+    rng = random.Random(1234)
+    state = GroundState()
+
+    expected: list[list] = []
+    collected: list[list] = []
+    cursor = None
+    had_first_poll = False
+    t = 0
+    for seq in range(100):
+        t += 100
+        angle = float(seq % 181)
+        dist = None if seq % 17 == 0 else 50.0 + (seq % 30)
+        state.ingest(_telem_sonar(seq, t, angle, dist), rssi=-50, recv_wall_ms=float(t))
+        sample = [t, angle, dist]
+        if had_first_poll:
+            expected.append(sample)
+
+        # Jittered poll cadence: sometimes poll after this frame, sometimes
+        # let 2-3 frames accumulate first, sometimes poll twice in a row
+        # with nothing new in between (second poll must yield []).
+        n_polls = rng.choice([0, 0, 1, 1, 1, 2])
+        for _ in range(n_polls):
+            if not had_first_poll:
+                # The first-ever poll sees only the sample just ingested
+                # (cursor=None contract) -- it was excluded from `expected`
+                # above by had_first_poll being False at append time, so
+                # add it back here, once.
+                expected.append(sample)
+                had_first_poll = True
+            snap = state.snapshot(
+                now_wall_ms=float(t), connected=True, serial_port=None, sonar_cursor=cursor,
+            )
+            cursor = snap["sonar_cursor"]
+            collected.extend(snap["sonar_recent"])
+
+    # Final poll to flush anything left buffered.
+    snap = state.snapshot(
+        now_wall_ms=float(t), connected=True, serial_port=None, sonar_cursor=cursor,
+    )
+    collected.extend(snap["sonar_recent"])
+
+    assert collected == expected
+
+
+def test_sonar_recent_two_clients_each_see_every_sample_once():
+    """F-radar (b): two independent clients, each polling at their own
+    jittered cadence interleaved with ingestion, must each individually
+    receive every ingested sample exactly once, in order -- the ring is a
+    shared read-only log, not a shared drain, so neither client's cursor
+    advancing should affect what the other client sees."""
+    import random
+
+    state = GroundState()
+    rng_a = random.Random(1)
+    rng_b = random.Random(2)
+    cursor_a = None
+    cursor_b = None
+    had_first_poll_a = False
+    had_first_poll_b = False
+    collected_a: list[list] = []
+    collected_b: list[list] = []
+    expected_a: list[list] = []
+    expected_b: list[list] = []
+
+    def poll_a(sample: list) -> None:
+        nonlocal cursor_a, had_first_poll_a
+        for _ in range(rng_a.choice([0, 0, 1, 1, 1, 2])):
+            if not had_first_poll_a:
+                expected_a.append(sample)
+                had_first_poll_a = True
+            snap = state.snapshot(
+                now_wall_ms=float(sample[0]), connected=True, serial_port=None, sonar_cursor=cursor_a,
+            )
+            cursor_a = snap["sonar_cursor"]
+            collected_a.extend(snap["sonar_recent"])
+
+    def poll_b(sample: list) -> None:
+        nonlocal cursor_b, had_first_poll_b
+        # A different cadence distribution so the two clients' polls land
+        # at different points relative to ingestion.
+        for _ in range(rng_b.choice([0, 1, 2, 2, 3])):
+            if not had_first_poll_b:
+                expected_b.append(sample)
+                had_first_poll_b = True
+            snap = state.snapshot(
+                now_wall_ms=float(sample[0]), connected=True, serial_port=None, sonar_cursor=cursor_b,
+            )
+            cursor_b = snap["sonar_cursor"]
+            collected_b.extend(snap["sonar_recent"])
+
+    t = 0
+    for seq in range(60):
+        t += 100
+        angle = float(seq % 181)
+        dist = 50.0 + (seq % 30)
+        state.ingest(_telem_sonar(seq, t, angle, dist), rssi=-50, recv_wall_ms=float(t))
+        sample = [t, angle, dist]
+        if had_first_poll_a:
+            expected_a.append(sample)
+        if had_first_poll_b:
+            expected_b.append(sample)
+        poll_a(sample)
+        poll_b(sample)
+
+    poll_a([t, None, None])
+    poll_b([t, None, None])
+
+    assert collected_a == expected_a
+    assert collected_b == expected_b
+
+
+def test_sonar_ring_bounded_with_no_clients():
+    """F-radar (c): with nobody ever calling snapshot() to advance a
+    cursor, the ring must not grow without bound -- it's capped at maxlen
+    (100, ~10s at 10Hz), not a queue that backs up forever for an unused
+    client."""
+    state = GroundState()
+    t = 0
+    for seq in range(10_000):
+        t += 100
+        state.ingest(
+            _telem_sonar(seq, t, float(seq % 181), 50.0), rssi=-50, recv_wall_ms=float(t),
+        )
+
+    assert len(state._sonar_ring) <= 100

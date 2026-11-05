@@ -326,6 +326,19 @@ class GroundState:
         self.ring_soc_pct = RingBuffer()
         self.ring_vbat_v = RingBuffer()
 
+        # F-radar: a bounded ring (not drained -- snapshot() is called once
+        # per connected WS client, so draining it in there would split the
+        # samples across however many tabs are open) of every sonar sample,
+        # each tagged with a monotonically increasing index. Each client
+        # keeps its own cursor (ws_ui in main.py) and asks snapshot() for
+        # everything newer than it, so N tabs each see every sample once
+        # regardless of how their individual 10 Hz push loop drifts against
+        # the 10 Hz TELEM feed. maxlen bounds memory when nothing is
+        # draining it (0 clients) to about 10s of samples at 10 Hz.
+        self._sonar_ring: deque[tuple[int, int, float, Optional[float]]] = deque(maxlen=100)
+        self._sonar_next_index = 0
+        self._last_sonar_seq: Optional[int] = None
+
         # Phase 5b expandable tiles (link/imu/motor/sys fields) -- kept
         # out of the 10 Hz WS snapshot, served on demand via GET
         # /api/history so an un-expanded tile costs nothing per tick.
@@ -478,6 +491,32 @@ class GroundState:
     def needs_hello_request(self) -> bool:
         return self._awaiting_hello_request
 
+    def _sonar_recent_since(
+        self, cursor: Optional[int],
+    ) -> tuple[list[list], Optional[int]]:
+        """Every ringed sonar sample with index > cursor, as
+        [t_ms, angle_deg, dist_cm|null], plus the new cursor to pass back
+        next call -- one independent read per client (F-radar), not a
+        shared drain, so N tabs each see every sample exactly once instead
+        of splitting them. cursor=None (a client's first call, e.g. just
+        connected) returns only the latest sample, not the whole ring --
+        a newly-opened tab shouldn't be flooded with pre-connection history.
+        No samples ringed yet -> ([], None), so a client with no rover
+        session yet starts at cursor=None rather than a wrong index.
+        """
+        if not self._sonar_ring:
+            return [], None
+        if cursor is None:
+            index, t_ms, angle_deg, dist_cm = self._sonar_ring[-1]
+            return [[t_ms, angle_deg, dist_cm]], index
+        out = [
+            [t_ms, angle_deg, dist_cm]
+            for index, t_ms, angle_deg, dist_cm in self._sonar_ring
+            if index > cursor
+        ]
+        new_cursor = self._sonar_ring[-1][0]
+        return out, new_cursor
+
     def _feed_rover_seq(self, seq: int, t_ms: int, recv_wall_ms: float, *, is_hello: bool) -> None:
         """Wraps LinkTracker.on_rover_seq so its seq-jump-fallback restart
         detection (returns True) also runs GroundState's own restart
@@ -505,6 +544,15 @@ class GroundState:
             if self.mission_start_wall_ms is None:
                 self.mission_start_wall_ms = recv_wall_ms
             self.telem = msg
+            if (
+                msg.sonar.angle_deg is not None
+                and (self._last_sonar_seq is None or msg.seq != self._last_sonar_seq)
+            ):
+                self._last_sonar_seq = msg.seq
+                self._sonar_ring.append(
+                    (self._sonar_next_index, msg.t, msg.sonar.angle_deg, msg.sonar.dist_cm)
+                )
+                self._sonar_next_index += 1
             self._feed_rover_seq(msg.seq, msg.t, recv_wall_ms, is_hello=False)
             self.link.on_telem(msg, recv_wall_ms=recv_wall_ms, rssi=rssi)
             self.ring_temp_c.append(msg.t, msg.env.temp_c)
@@ -575,6 +623,7 @@ class GroundState:
 
     def snapshot(
         self, *, now_wall_ms: float, connected: bool, serial_port: Optional[str],
+        sonar_cursor: Optional[int] = None,
     ) -> dict:
         hello_dump = self.hello.model_dump() if self.hello else None
         if hello_dump is not None and self.camera is not None:
@@ -587,10 +636,13 @@ class GroundState:
         # anything but recent_events -- see eventlog.js). self.events stays
         # as the backend's own full history for when Phase 7 needs it.
         recent_events = list(self.events)[-10:][::-1]  # newest first
+        sonar_recent, sonar_next_cursor = self._sonar_recent_since(sonar_cursor)
         return {
             "hello": hello_dump,
             "telem": self.telem.model_dump() if self.telem else None,
             "scan": self.scan.model_dump() if self.scan else None,
+            "sonar_recent": sonar_recent,
+            "sonar_cursor": sonar_next_cursor,
             "recent_events": [
                 {"t": e.t, "level": e.level, "code": e.code, "msg": e.msg}
                 for e in recent_events

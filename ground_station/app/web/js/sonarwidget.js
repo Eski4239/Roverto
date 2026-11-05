@@ -1,11 +1,8 @@
-// Science preset -- small Sonar card: front distance + mini sweep
+// Science preset -- small Sonar card: front distance + mini classic radar
 // (docs/03b §4). docs/02: dist_cm null = "no echo" (nodata, not absent).
 import { renderField } from "./hwstate.js";
 import { thresholdClassFor } from "./thresholds.js";
-import { sonarAngleToXY } from "./sonargeometry.js";
-
-const MAX_RANGE_CM = 200;
-const REDRAW_PERIOD_MS = 500; // 2 Hz
+import { RadarWidget } from "./radarwidget.js";
 
 export class SonarWidget {
   constructor(root) {
@@ -15,14 +12,11 @@ export class SonarWidget {
         <h2>SONAR · FRONT</h2>
         <div class="sonar-widget">
           <div class="tile-value" id="sonar-dist"></div>
-          <svg class="sonar-radar" viewBox="0 0 100 55">
-            <path d="M 2 52 A 48 48 0 0 1 98 52" fill="none" stroke="var(--border)" />
-            <line id="sonar-radar-line" x1="50" y1="52" x2="50" y2="52" stroke="currentColor" stroke-width="2" />
-          </svg>
+          <div class="radar-slot" id="sonar-radar-slot"></div>
         </div>
       </section>
     `;
-    this._lastDrawWallMs = -Infinity;
+    this.radar = new RadarWidget(this.root.querySelector("#sonar-radar-slot"), { mini: true });
   }
 
   render(snapshot, nowWallMs) {
@@ -45,20 +39,6 @@ export class SonarWidget {
       distEl.className = `tile-value ${field.cls || thresholdClassFor("sonar_dist_cm", sonar.dist_cm)}`;
     }
 
-    if (nowWallMs - this._lastDrawWallMs < REDRAW_PERIOD_MS) return;
-    this._lastDrawWallMs = nowWallMs;
-
-    const line = this.root.querySelector("#sonar-radar-line");
-    if (!line) return;
-    if (!sonarPresent || sonar.dist_cm == null || sonar.angle_deg == null) {
-      line.setAttribute("x2", "50");
-      line.setAttribute("y2", "52");
-      return;
-    }
-    const range = Math.min(sonar.dist_cm, MAX_RANGE_CM) / MAX_RANGE_CM;
-    const length = 48 * range;
-    const { x, y } = sonarAngleToXY(sonar.angle_deg, length, 50, 52);
-    line.setAttribute("x2", x.toFixed(1));
-    line.setAttribute("y2", y.toFixed(1));
+    this.radar.render(snapshot, nowWallMs);
   }
 }

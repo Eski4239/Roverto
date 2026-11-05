@@ -309,12 +309,20 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         # (always stays a viewer; TAKE CONTROL is a deliberate action).
 
         async def _push_snapshots() -> None:
+            # F-radar: this client's own cursor into state's sonar ring
+            # (deque[tuple[int, int, float, Optional[float]]]) -- state.snapshot()
+            # is called once per connected ws_ui, so each client must track
+            # its own read position or N tabs split the samples between them
+            # instead of each seeing every one.
+            sonar_cursor: Optional[int] = None
             while True:
                 snapshot = state.snapshot(
                     now_wall_ms=time.time() * 1000.0,
                     connected=link.is_connected(),
                     serial_port=link.active_port(),
+                    sonar_cursor=sonar_cursor,
                 )
+                sonar_cursor = snapshot.pop("sonar_cursor")
                 snapshot["in_control"] = ws is controlling_ws
                 snapshot["controller_present"] = controlling_ws is not None
                 snapshot["joystick"] = joystick.to_block()

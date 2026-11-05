@@ -193,6 +193,65 @@ async def test_no_inner_scroll_and_no_console_errors_per_preset(running_backend)
     await asyncio.wait_for(_run_no_scroll_per_preset(base_url), timeout=60.0)
 
 
+async def _run_radar_sweep_animates_and_fades(base_url: str) -> None:
+    """F-radar: with the simulator's servo sweeping, the Drive preset's
+    large radar (surroundingswidget.js -> RadarWidget at #surr-radar-slot)
+    must actually animate its sweep line over wall-clock time, and must
+    never draw a wedge older than FADE_MS -- catches the rAF/Date.now()
+    clock-mismatch bug (ages computed against the wrong clock either never
+    fade, or go hugely negative and pin the sweep at 0/180 forever, which
+    would also fail the "5 distinct angles" check below)."""
+    console_errors: list[str] = []
+    async with playwright_async.async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page(viewport=VIEWPORT)
+            page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+            page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+            await page.goto(base_url)
+            await page.wait_for_timeout(500)  # let the first WS snapshot land
+
+            await page.click('[data-preset="drive"]')
+            await page.wait_for_timeout(200)
+
+            angles: list[float | None] = []
+            max_wedge_age_seen = 0.0
+            for _ in range(20):  # ~2s at 100ms steps
+                state = await page.evaluate(
+                    """() => {
+                        const el = document.querySelector('#surr-radar-slot');
+                        return el && el.radarWidget ? el.radarWidget.debugState() : null;
+                    }"""
+                )
+                assert state is not None, "RadarWidget debugState() not found on #surr-radar-slot"
+                angles.append(state["lastDrawnSweepAngleDeg"])
+                if state["lastDrawnWedgeAgesMs"]:
+                    max_wedge_age_seen = max(max_wedge_age_seen, max(state["lastDrawnWedgeAgesMs"]))
+                await page.wait_for_timeout(100)
+
+            distinct_angles = {round(a, 1) for a in angles if a is not None}
+            assert len(distinct_angles) >= 5, (
+                f"sweep angle did not animate over 2s (clock mismatch?): saw {angles}"
+            )
+            # FADE_MS is radarwidget.js's own constant (1500); a correct
+            # clock keeps every drawn wedge's age well under that, a
+            # mismatched clock either keeps ages permanently 0 (same-ish
+            # value, never growing) or wildly large/negative -- the bound
+            # below is generous (covers normal scheduling jitter) while
+            # still catching either failure mode.
+            assert max_wedge_age_seen <= 1500, (
+                f"a wedge older than FADE_MS (1500ms) was drawn: {max_wedge_age_seen}ms"
+            )
+        finally:
+            await browser.close()
+    assert console_errors == [], f"console errors: {console_errors}"
+
+
+async def test_radar_sweep_animates_and_never_draws_stale_wedges(running_backend):
+    base_url, _ = running_backend
+    await asyncio.wait_for(_run_radar_sweep_animates_and_fades(base_url), timeout=60.0)
+
+
 async def _run_only_selected_preset_visible(base_url: str) -> None:
     """F18: .preset-panel had no [hidden] CSS rule, so its `display: flex`
     beat the UA default and all three presets rendered stacked at once."""

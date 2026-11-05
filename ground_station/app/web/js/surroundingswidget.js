@@ -5,11 +5,7 @@
 // beside it -- not two permanent side-by-side panels.
 import { renderField } from "./hwstate.js";
 import { thresholdClassFor } from "./thresholds.js";
-import { sonarAngleToXY } from "./sonargeometry.js";
-
-const MAX_RANGE_CM = 200;
-const RANGE_RINGS_CM = [66, 133, 200]; // 0.66m / 1.33m / 2m, per spec
-const REDRAW_PERIOD_MS = 500;
+import { RadarWidget } from "./radarwidget.js";
 
 export class SurroundingsWidget {
   constructor(root) {
@@ -22,20 +18,12 @@ export class SurroundingsWidget {
         </div>
         <div class="surroundings-body">
           <div class="surroundings-camera" id="surr-camera" hidden></div>
-          <svg class="sonar-radar large" id="surr-radar" viewBox="0 0 220 112">
-            ${RANGE_RINGS_CM.map((r, i) => {
-              const frac = r / MAX_RANGE_CM;
-              const rx = 95 * frac;
-              return `<path d="M${105 - rx} 105 A${rx} ${rx} 0 0 1 ${105 + rx} 105" fill="none" stroke="var(--border-strong)" />`;
-            }).join("")}
-            <polyline id="surr-sweep" points="" fill="none" stroke="var(--ok)" stroke-width="1.5" />
-            <rect x="100" y="100" width="10" height="8" rx="2" fill="var(--accent)" />
-          </svg>
+          <div class="radar-slot large" id="surr-radar-slot"></div>
         </div>
         <p class="surroundings-note" id="surr-note">The camera feed takes this space when the ESP32-CAM is fitted; the sweep moves beside it.</p>
       </section>
     `;
-    this._lastDrawWallMs = -Infinity;
+    this.radar = new RadarWidget(this.root.querySelector("#surr-radar-slot"), { mini: false });
   }
 
   render(snapshot, nowWallMs) {
@@ -61,29 +49,17 @@ export class SurroundingsWidget {
     }
 
     const cameraEl = this.root.querySelector("#surr-camera");
-    const radarEl = this.root.querySelector("#surr-radar");
+    const radarSlot = this.root.querySelector("#surr-radar-slot");
     const noteEl = this.root.querySelector("#surr-note");
-    if (cameraEl && radarEl) {
+    if (cameraEl && radarSlot) {
       cameraEl.hidden = !cameraPresent;
-      radarEl.classList.toggle("companion", cameraPresent);
+      radarSlot.classList.toggle("companion", cameraPresent);
       if (cameraPresent && camera.url) {
         cameraEl.innerHTML = `<img src="${camera.url}" alt="Rover camera feed" class="camera-feed">`;
       }
       if (noteEl) noteEl.hidden = cameraPresent;
     }
 
-    if (nowWallMs - this._lastDrawWallMs < REDRAW_PERIOD_MS) return;
-    this._lastDrawWallMs = nowWallMs;
-
-    const sweep = this.root.querySelector("#surr-sweep");
-    if (!sweep) return;
-    if (!sonarPresent || sonar.dist_cm == null || sonar.angle_deg == null) {
-      sweep.setAttribute("points", "");
-      return;
-    }
-    const range = Math.min(sonar.dist_cm, MAX_RANGE_CM) / MAX_RANGE_CM;
-    const length = 95 * range;
-    const { x: px, y: py } = sonarAngleToXY(sonar.angle_deg, length, 105, 105);
-    sweep.setAttribute("points", `105,105 ${px.toFixed(1)},${py.toFixed(1)}`);
+    this.radar.render(snapshot, nowWallMs);
   }
 }
