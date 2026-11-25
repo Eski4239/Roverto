@@ -134,6 +134,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | D-017 | **Passive buzzer** (Victor's choice): driven with LEDC `ledcWriteTone`. `CMD_BUZZER` set → two-tone pattern while the flag is set; firmware-only cues (no protocol change): boot jingle, short chirp when the link comes up, two falling notes on WD_STOP. Buzzer and servo must not share an LEDC timer (attach with different freq/resolution; check the servo doesn't twitch while the buzzer plays). WD_STOP silences the command tone immediately. | PROPOSED 2026-10-24 | none |
 | D-018 | **Drive motors: 4× JGA25-370, 12 V, ~60 rpm (ratio ≈1:90–1:103), Hall encoder A/B (11 PPR on motor shaft, VCC 3.3 V), 4 mm D shaft** (+1 spare, all same ratio). Chassis (2026-11-24): rocker-bogie, 6 wheels of which 4 driven, wheels 95 mm OD with 12 mm hex hub (needs 4 mm → 12 mm hex adapters), L 42 × W 35.6 × H 22.2 cm, wheelbase 32.5 cm. Sizing (assumed 4 kg, 20° slope, rolling coeff. 0.1): ≈2.1 kg·cm per motor = max-efficiency point of the ~60 rpm version; top speed ≈0.29 m/s. Chassis group's mass estimate (2026-11-25): ~2 kg; our parts list gives ≈2.5–3 kg (motors ~0.4, 6 wheels ~0.35, battery ~0.2, electronics ~0.2, frame 1–1.5). ~60 rpm kept for torque margin (obstacles, estimate uncertainty). 12 V motors match the 3S battery → PWM_MAX back to 255 (replaces D-013). Only 2 encoders wired (one per side, quadrature → 4 GPIO). Exact ratio goes in `config.h` once bought. | PROPOSED 2026-11-25 | ⚠ wheel geometry in `config.toml` (radius 47.5 mm); rpm range ≈0–65 |
 | D-019 | **Motor driver TB6612 → Cytron MDD10A** (2 ch, 5–30 V, 10 A cont., PWM+DIR, 3.3 V logic). 2 motors in parallel per side/channel: ≈0.7 A running, up to ≈3–4.4 A per channel when stalled, above TB6612's 1.2 A cont. / 3.2 A peak. Frees pins (4 instead of 7) for the 2 quadrature encoders → docs/04 §1 pin plan to be redone. Battery side: BMS ≥ 10 A, ~10 A fuse. | PROPOSED 2026-11-25 | none |
+| D-020 | **Skid steering (tank-style), no steering servos** (team decision 2026-11-25). Left/right sides driven independently: maps 1:1 onto the existing CmdMsg `drive_l/drive_r` → **no protocol change**. Pivot turns scrub the tyres sideways and are the worst-case motor load: est. ≈1.5–2 kg·cm per motor (3 kg, lateral μ 0.6–0.8, corner wheels ±16 cm from centre, track ≈32 cm) → confirms ~60 rpm (D-018); speed is not a priority. Proposed: drive the **4 corner wheels**, middle pair free. Firmware: keep the PWM ramp (D-007), expect current peaks while turning on the spot; encoder odometry slips in turns → heading from IMU yaw (docs/04 §D). | PROPOSED 2026-11-25 | none (sim/GS already differential) |
 
 ## 4. Open questions (answer here, then turn into decisions)
 
@@ -216,8 +217,7 @@ rover_main plan (each step is flashed and tested on its own before the next):
 
 ### 2026-11-25 — motors chosen (Victor + Claude chat)
 - Chassis group fixed wheels/dimensions; 4 driven wheels. Proposed JGA25-370 12 V ~60 rpm with encoder
-  (D-018) and Cytron MDD10A driver (D-019). Q-2 answered by D-018. Mass: chassis says ~2 kg, we budget 2.5–3 kg → keep ~60 rpm. Pending: whether
-  the blue parts on the corner wheels are steering servos (would need MG996R-class + own 5–6 V rail),
+  (D-018) and Cytron MDD10A driver (D-019). Q-2 answered by D-018. Mass: chassis says ~2 kg, we budget 2.5–3 kg → keep ~60 rpm. No steering servos: skid steering (D-020). Pending: which 4 wheels are driven (proposed corners),
   new pin plan for driver + 2 quadrature encoders.
 
 ### 2026-10-25 (3) — rover side: buzzer moved to GPIO15
