@@ -132,12 +132,14 @@ rover_main plan (each step is flashed and tested on its own before the next):
 | D-016 | **`assisted` obstacle threshold 20 cm → 10 cm.** 20 cm is too conservative for the rover's size (Victor). For the threshold to mean anything the front reading must be fresh: in sweep mode 0° is only seen about once per ~2 s round trip, and the rover covers tens of cm in that time. Proposal: in `assisted` the rover parks the servo at front (sweep ignored) and pings every ~60 ms; forward is blocked if front < 10 cm **or** the last front reading is older than 200 ms / no echo (fail-safe). Final value confirmed by a stopping-distance measurement in R8/R12. Needs a docs/02 §5 rule 4b PR + `OBSTACLE_DIST_CM` in the simulator. | **PROPOSED** 2026-10-24 | ⚠ OBSTACLE fires at 10 cm; servo doesn't sweep in assisted. Dashboard sonar colour thresholds (config.toml) unchanged unless GS wants it |
 | D-015 | **On boot `seq` starts at 0 and `t_ms` = `millis()`** (restarts at 0 on every reset). The first message after boot is a HELLO with `reset_reason` (docs/02 §2.1), sent before any TELEM. | **AGREED** 2026-10-20 (GS: Pablo) — details in GS-2 | ⚠ GS detects a reboot by `t_ms` going backwards (GS-2) |
 | D-017 | **Passive buzzer** (Victor's choice): driven with LEDC `ledcWriteTone`. `CMD_BUZZER` set → two-tone pattern while the flag is set; firmware-only cues (no protocol change): boot jingle, short chirp when the link comes up, two falling notes on WD_STOP. Buzzer and servo must not share an LEDC timer (attach with different freq/resolution; check the servo doesn't twitch while the buzzer plays). WD_STOP silences the command tone immediately. | PROPOSED 2026-10-24 | none |
+| D-018 | **Drive motors: 4× JGA25-370, 12 V, ~60 rpm (ratio ≈1:90–1:103), Hall encoder A/B (11 PPR on motor shaft, VCC 3.3 V), 4 mm D shaft** (+1 spare, all same ratio). Chassis (2026-11-24): rocker-bogie, 6 wheels of which 4 driven, wheels 95 mm OD with 12 mm hex hub (needs 4 mm → 12 mm hex adapters), L 42 × W 35.6 × H 22.2 cm, wheelbase 32.5 cm. Sizing (assumed 4 kg, 20° slope, rolling coeff. 0.1): ≈2.1 kg·cm per motor = max-efficiency point of the ~60 rpm version; top speed ≈0.29 m/s. 12 V motors match the 3S battery → PWM_MAX back to 255 (replaces D-013). Only 2 encoders wired (one per side, quadrature → 4 GPIO). Exact ratio goes in `config.h` once bought. | PROPOSED 2026-11-25 | ⚠ wheel geometry in `config.toml` (radius 47.5 mm); rpm range ≈0–65 |
+| D-019 | **Motor driver TB6612 → Cytron MDD10A** (2 ch, 5–30 V, 10 A cont., PWM+DIR, 3.3 V logic). 2 motors in parallel per side/channel: ≈0.7 A running, up to ≈3–4.4 A per channel when stalled, above TB6612's 1.2 A cont. / 3.2 A peak. Frees pins (4 instead of 7) for the 2 quadrature encoders → docs/04 §1 pin plan to be redone. Battery side: BMS ≥ 10 A, ~10 A fuse. | PROPOSED 2026-11-25 | none |
 
 ## 4. Open questions (answer here, then turn into decisions)
 
 - ~~**Q-1** Who writes `firmware/ground_bridge`?~~ → **Eski4239** (2026-10-20). Rover side needs it
   for R3; if it isn't ready by then, rover side writes a throw-away test sketch.
-- **Q-2 Motor supply:** is TB6612 VM fed straight from the 3S battery (up to 12.6 V)? TT motors are
+- ~~**Q-2**~~ → answered by D-018/D-019 (2026-11-25). **Q-2 Motor supply:** is TB6612 VM fed straight from the 3S battery (up to 12.6 V)? TT motors are
   usually rated 3–6 V and TB6612 is 1.2 A/channel continuous. If VM = battery, cap PWM_MAX ≈ 120/255
   (~6 V average). Need the motor datasheet / measured stall current.
   **2026-10-20:** final motors not chosen; provisionally Arduino-kit TT motors → D-013. Still need:
@@ -211,6 +213,12 @@ rover_main plan (each step is flashed and tested on its own before the next):
   per-model gating) — no GS changes needed once R6 lands.
 
 ## 5. Session log (newest first)
+
+### 2026-11-25 — motors chosen (Victor + Claude chat)
+- Chassis group fixed wheels/dimensions; 4 driven wheels. Proposed JGA25-370 12 V ~60 rpm with encoder
+  (D-018) and Cytron MDD10A driver (D-019). Q-2 answered by D-018. Pending: rover mass estimate, whether
+  the blue parts on the corner wheels are steering servos (would need MG996R-class + own 5–6 V rail),
+  new pin plan for driver + 2 quadrature encoders.
 
 ### 2026-10-25 (3) — rover side: buzzer moved to GPIO15
 - Buzzer pin 13 → 15 for tidier wiring (Victor). GPIO15 is a strapping pin (MTDO): held low at boot it
